@@ -245,13 +245,13 @@ MONSTERS = [
     ("the King's espresso golem", 22,  5, 25,  "Pressurized. Loud. Furious.",                      "espresso_golem"),
 ]
 
-TREASURES = [
-    ("a small pouch of gold", "gold",     (8, 18)),
-    ("a forgotten gem",       "gold",     (15, 30)),
-    ("a healing potion",      "potion",   1),
-    ("a rusty sword",         "weapon_up",1),
-    ("a shiny shield",        "armor_up", 1),
-    ("a stale croissant",     "potion",   1),
+SPECIAL_TREASURES = [
+    # Hand-crafted items occasionally mixed in among the procgen loot.
+    ("a stale croissant",         "potion",    1),
+    ("the King's chipped mug",    "weapon_up", 2),
+    ("a half-finished journal",   "potion",    1),
+    ("the brewmaster's apron",    "armor_up",  2),
+    ("a moth-eaten map fragment", "gold",      (12, 24)),
 ]
 
 TRAPS = [
@@ -273,6 +273,147 @@ FOUNTAIN_LINES = [
     "A frog winks at you from inside the fountain basin. You drink anyway.",
     "A copper mug rests on the fountain rim. You fill it, drink, set it back.",
 ]
+
+# ---------- procgen lists ----------
+
+WEAPON_MATERIALS = [
+    # (name, base_bonus)
+    ("rusted",     1),
+    ("splintered", 1),
+    ("plain",      1),
+    ("copper",     1),
+    ("bone",       2),
+    ("ironwood",   2),
+    ("polished",   2),
+    ("gilded",     2),
+    ("jagged",     2),
+    ("obsidian",   3),
+    ("ancient",    3),
+]
+
+WEAPON_TYPES = ["sword", "dagger", "mace", "hammer", "axe", "spear", "cleaver", "rapier"]
+
+ARMOR_TYPES  = ["shield", "buckler", "gauntlet", "cuirass", "helm", "vambrace"]
+
+GEAR_THEMES = [
+    "of the King", "of beans", "of dawn", "of the deep", "of regret",
+    "of midnight", "of the brewmaster", "of caffeine", "of the lost cup",
+    "of the steeping", "of the crooked oak", "of small mercies",
+    "of the second pour",
+]
+
+POTION_ADJECTIVES = [
+    "fizzing", "tepid", "glowing", "steaming", "inky", "syrupy",
+    "bitter", "velvet", "milky", "shimmering", "frothy", "gritty",
+]
+
+MONSTER_PREFIXES = [
+    # (prefix, hp_mod, atk_mod, gold_mod)
+    ("blazing",   2,  2,   3),
+    ("tiny",     -3,  0,  -2),
+    ("ancient",   4,  1,   5),
+    ("cursed",    1,  2,   8),
+    ("rabid",     0,  3,  -1),
+    ("decaf",    -2, -1,   0),
+    ("twin",      3,  1,   2),
+    ("crystal",   2,  0,  10),
+    ("phantom",   1,  2,   3),
+    ("tweedy",    0,  0,   2),
+    ("artisanal", 1,  1,   6),
+]
+
+MONSTER_SUFFIXES = [
+    # (suffix, hp_mod, atk_mod, gold_mod)
+    ("of the depths",       5,  1,   8),
+    ("the elder",           4,  1,   5),
+    ("the apprentice",     -3, -1,  -3),
+    ("the unwashed",        0,  0,  -2),
+    ("of midnight",         3,  2,   6),
+    ("the caffeinated",     2,  2,   4),
+    ("of the bean court",   3,  1,  10),
+    ("the lonely",         -1, -1,   3),
+    ("of the second pour",  2,  1,   4),
+    ("the over-extracted",  1,  3,   2),
+]
+
+# ---------- procgen ----------
+
+def article_for(word):
+    return "an" if word and word[0].lower() in "aeiou" else "a"
+
+def procgen_weapon():
+    mat, base = random.choice(WEAPON_MATERIALS)
+    wtype = random.choice(WEAPON_TYPES)
+    name = f"{article_for(mat)} {mat} {wtype}"
+    bonus = base
+    if random.random() < 0.4:
+        name += " " + random.choice(GEAR_THEMES)
+        bonus += 1
+    return name, bonus
+
+def procgen_armor():
+    mat, base = random.choice(WEAPON_MATERIALS)
+    atype = random.choice(ARMOR_TYPES)
+    name = f"{article_for(mat)} {mat} {atype}"
+    bonus = base
+    if random.random() < 0.4:
+        name += " " + random.choice(GEAR_THEMES)
+        bonus += 1
+    return name, bonus
+
+def procgen_potion():
+    adj = random.choice(POTION_ADJECTIVES)
+    return f"{article_for(adj)} {adj} potion"
+
+def procgen_treasure():
+    """Returns (display_name, kind, value)."""
+    if random.random() < 0.15:
+        return random.choice(SPECIAL_TREASURES)
+    roll = random.random()
+    if roll < 0.30:
+        if random.random() < 0.5:
+            return "a small pouch of gold", "gold", (8, 18)
+        return "a forgotten gem", "gold", (15, 30)
+    if roll < 0.55:
+        name, bonus = procgen_weapon()
+        return name, "weapon_up", bonus
+    if roll < 0.75:
+        name, bonus = procgen_armor()
+        return name, "armor_up", bonus
+    return procgen_potion(), "potion", 1
+
+def _insert_prefix(name, prefix):
+    parts = name.split(" ", 1)
+    if len(parts) == 2 and parts[0] in ("a", "an", "the"):
+        article, rest = parts
+        if article in ("a", "an"):
+            article = article_for(prefix)
+        return f"{article} {prefix} {rest}"
+    return f"{prefix} {name}"
+
+def procgen_monster():
+    base = random.choice(MONSTERS)
+    name, hp, atk, gold, flavor, art_key = base
+    rand = random.random()
+    if rand < 0.30:
+        prefix, hpm, atkm, gm = random.choice(MONSTER_PREFIXES)
+        return (_insert_prefix(name, prefix),
+                max(1, hp + hpm), max(1, atk + atkm), max(1, gold + gm),
+                flavor, art_key)
+    if rand < 0.55:
+        suffix, hpm, atkm, gm = random.choice(MONSTER_SUFFIXES)
+        return (f"{name} {suffix}",
+                max(1, hp + hpm), max(1, atk + atkm), max(1, gold + gm),
+                flavor, art_key)
+    if rand < 0.65:
+        prefix, p_hp, p_atk, p_g = random.choice(MONSTER_PREFIXES)
+        suffix, s_hp, s_atk, s_g = random.choice(MONSTER_SUFFIXES)
+        return (f"{_insert_prefix(name, prefix)} {suffix}",
+                max(1, hp + p_hp + s_hp),
+                max(1, atk + p_atk + s_atk),
+                max(1, gold + p_g + s_g),
+                flavor, art_key)
+    return base
 
 ROOM_LABELS = {
     "empty":    ("·",  C.GRY, "Empty Room"),
@@ -471,7 +612,7 @@ def handle_room(player, dungeon):
         return "ok"
 
     if kind == "monster":
-        m = random.choice(MONSTERS)
+        m = procgen_monster()
         result, gold = combat(player, m)
         if result == "dead":
             return "dead"
@@ -488,20 +629,21 @@ def handle_room(player, dungeon):
         return "ok"
 
     if kind == "treasure":
-        name, kind2, val = random.choice(TREASURES)
+        name, kind2, val = procgen_treasure()
         lines = [f"  You find {colorize(name, C.GLD)}."]
         if kind2 == "gold":
-            g = random.randint(*val); player.gold += g
+            g = random.randint(*val) if isinstance(val, tuple) else val
+            player.gold += g
             lines.append(colorize(f"  +{g} gold.", C.GLD))
         elif kind2 == "potion":
             player.potions += 1
             lines.append(colorize("  +1 potion.", C.MAG))
         elif kind2 == "weapon_up":
-            player.atk += 1
-            lines.append(colorize("  ATK +1.", C.GRN))
+            player.atk += val
+            lines.append(colorize(f"  ATK +{val}.", C.GRN))
         elif kind2 == "armor_up":
-            player.armor += 1
-            lines.append(colorize("  Armor +1.", C.GRN))
+            player.armor += val
+            lines.append(colorize(f"  Armor +{val}.", C.GRN))
         dungeon.rooms[pos] = "empty"
         render(player, dungeon, "treasure", "treasure", lines)
         return "ok"
