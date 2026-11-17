@@ -411,7 +411,7 @@ _article:
 // Fills m_*: a base monster, sometimes with a prefix and/or suffix.
 _procgen_monster:
 	ENTER
-	mov	x0, 10
+	mov	x0, 11
 	bl	_rnd
 	LA	x19, monsters
 	mov	x8, 64
@@ -875,7 +875,7 @@ _render_combat:
 	SAY	"  \023%ld/%ld\001"
 	LDQ	x1, c_buff
 	cbz	x1, 8f
-	SAY	"  \024+%ld ATK\001"
+	SAY	"  \024%+ld ATK\001"
 8:	LDQ	x8, p_poison
 	cbz	x8, 9f
 	SAY	"  \004poisoned\001"
@@ -999,6 +999,8 @@ _roll_dmg:
 	sub	x0, x8, 1
 	add	x1, x8, 2
 	bl	_randint
+	cmp	x0, 1
+	csinc	x0, x0, xzr, ge
 	LEAVE
 
 // apply_hit(x0 dmg) -> damage dealt after the foe's trait (0 = dodged)
@@ -1064,7 +1066,7 @@ _foe_turn:
 	LOG	"\004  Venom seeps into the wound.\001"
 	b	4f
 2:	cmp	x8, 4                           // light-fingered: 30% steal up to 5 gold
-	b.ne	4f
+	b.ne	3f
 	LDQ	x9, p_gold
 	cbz	x9, 4f
 	mov	x0, 100
@@ -1080,6 +1082,19 @@ _foe_turn:
 	ADDQ	m_gold, x21
 	mov	x2, x21
 	LOG	"\007  It pockets %ld of your gold.\001"
+	b	4f
+3:	cmp	x8, 6                           // managerial: 35% write-up, -1 ATK this fight
+	b.ne	4f
+	mov	x0, 100
+	bl	_rnd
+	cmp	x0, 35
+	b.hs	4f
+	ADDQ	c_buff, -1
+	mov	x0, 4
+	bl	_rnd
+	LA	x8, writeups
+	ldr	x2, [x8, x0, lsl 3]
+	LOG	"\004  %s You've been written up. ATK -1 this fight.\001"
 4:	LDQ	x8, p_poison
 	cbz	x8, 5f
 	sub	x8, x8, 1
@@ -1195,7 +1210,12 @@ _combat:
 	bl	_foe_turn
 	b	1b
 
-30:	LDQ	x8, boss                        // run
+30:	LDQ	x8, m_trait                     // run
+	cmp	x8, 6
+	b.ne	35f
+	LOG	"\004  'Before you go, quick sync?' You can't leave.\001"
+	b	31f
+35:	LDQ	x8, boss
 	cbz	x8, 32f
 	LOG	"\004  The King's gaze pins you in place.\001"
 	b	31f
@@ -2310,6 +2330,15 @@ art_dice:	.ascii "\023"
 	.ascii "           '-------'    '-------'\n"
 	.asciz "\001"
 lbl_dice:	.asciz "\002\006  ⚅  DICE GOBLIN\001\n"
+art_manager:	.ascii "\023"
+	.ascii "             _______\n"
+	.ascii "            |  ___  |\n"
+	.ascii "            | (o o) |     \"per my last email.\"\n"
+	.ascii "            |  ---  |\n"
+	.ascii "             \\_____/\n"
+	.ascii "            /|  |  |\\    __\n"
+	.ascii "           / |  V  | \\  |==|\n"
+	.asciz "\001"
 esc_R:	.asciz "\033[0m"
 esc_B:	.asciz "\033[1m"
 esc_DIM:	.asciz "\033[2m"
@@ -2360,6 +2389,7 @@ monsters:		// article, rest, hp, atk, gold, flavor, art, trait
 	.quad Ls0, Lm0, 14, 3, 12, Lm1, art_french_press, 3
 	.quad Ls0, Lm2, 7, 3, 8, Lm3, art_weevils, 2
 	.quad Ls0, Lm4, 18, 4, 20, Lm5, art_lich, 1
+	.quad Ls13, Lm6, 20, 4, 30, Lm7, art_manager, 6
 prefixes:		// name, hp, atk, gold
 	.quad Ls16, 2, 2, 3
 	.quad Ls17, -3, 0, -2
@@ -2470,7 +2500,9 @@ riddles:		// question, answer, alternative answer
 	.quad Lr8, Lr8a, Lr8a
 	.quad Lr9, Lr9a, Lr9a
 trait_names:		// indexed by monster trait
-	.quad 0, Lt1, Lt2, Lt3, Lt4, Lt5
+	.quad 0, Lt1, Lt2, Lt3, Lt4, Lt5, Lt6
+writeups:		// the manager's write-up lines
+	.quad Lw0, Lw1, Lw2, Lw3
 class_names:
 	.quad Lc0, Lc1, Lc2
 room_cum:		// cumulative weights: empty monster treasure trap shrine merchant fountain campfire riddle dice
@@ -2506,6 +2538,13 @@ Lt2:	.asciz "evasive"
 Lt3:	.asciz "armored"
 Lt4:	.asciz "light-fingered"
 Lt5:	.asciz "regenerating"
+Lt6:	.asciz "managerial"
+Lm6:	.asciz "regional manager"
+Lm7:	.asciz "'Got a minute? Per my last email...'"
+Lw0:	.asciz "'Per my last email.'"
+Lw1:	.asciz "'Let's take this offline.'"
+Lw2:	.asciz "'This is going in your file.'"
+Lw3:	.asciz "'I'm not mad, just disappointed.'"
 Lc0:	.asciz "Knight"
 Lc1:	.asciz "Barista"
 Lc2:	.asciz "Rogue"
