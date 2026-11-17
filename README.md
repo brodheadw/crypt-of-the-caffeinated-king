@@ -9,7 +9,7 @@ clang -o crypt crypt.s
 
 ## What it is
 
-You wander a randomly generated 5×5 dungeon trying to reach the exit in the far corner. Along the way: monsters, treasure, traps, fountains, shrines, and a hooded merchant. The King has hoarded every bean north of the river. Get the last one.
+You descend three randomly generated 5×5 floors, each with its stairs in the far corner. Along the way: monsters, treasure, traps, fountains, shrines, campfires, a riddling owl, and a hooded merchant. At the bottom, on a throne of burlap sacks, sits the Caffeinated King. He has hoarded every bean north of the river. Take the last one.
 
 ## Features
 
@@ -17,8 +17,15 @@ You wander a randomly generated 5×5 dungeon trying to reach the exit in the far
 - HP bars that shift green → yellow → red
 - ASCII art for every room type and every monster
 - Each move clears the screen — each room is its own scene
-- Combat with attack / potion / run, plus a rolling action log
+- Three floors; monsters and traps hit harder the deeper you go
+- A boss fight: the King throws scalding espresso every third turn, heals
+  once when hurt, and won't let you run
+- XP and levels: every kill earns XP; each level gives +4 max HP and +1 ATK
+- Combat with attack / heavy attack (double damage or a miss) / potion / run,
+  plus a rolling action log
 - Shrines, fountains, traps, treasure, a merchant with a mystery box
+- Campfires: rest to full HP, if nothing finds you in your sleep
+- An owl statue that asks riddles: answer right for loot, wrong and it bites
 - Seven base monsters (cursed barista, espresso golem, etc.) modulated by
   procedural prefixes and suffixes — you'll fight things like
   *an artisanal moss-covered skeleton of the second pour*
@@ -58,7 +65,7 @@ i               info
 q               quit
 ```
 
-In combat: `a` attack, `p` drink potion, `r` run.
+In combat: `a` attack, `h` heavy attack, `p` drink potion, `r` run.
 
 ## Requirements
 

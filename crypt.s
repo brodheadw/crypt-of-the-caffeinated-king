@@ -463,7 +463,13 @@ _procgen_monster:
 	mov	x0, x23
 	bl	_article
 	mov	x27, x0
-5:	cmp	x20, 1
+5:	LDQ	x8, depth                       // deeper floors: +4 hp, +1 atk, +5 gold each
+	sub	x8, x8, 1
+	add	x20, x20, x8, lsl 2
+	add	x21, x21, x8
+	mov	x9, 5
+	madd	x22, x8, x9, x22
+	cmp	x20, 1
 	csinc	x20, x20, xzr, ge
 	cmp	x21, 1
 	csinc	x21, x21, xzr, ge
@@ -678,35 +684,82 @@ _status:
 	LDQ	x2, p_hp
 	LDQ	x3, p_max
 	bl	_sfmt
-	mov	x20, x0
-	LA	x0, tmpb
-	STR	x1, "Turn %ld"
-	LDQ	x2, p_turns
-	bl	_sfmt
-	add	x20, x20, x0
 	SAY	"│ HP  "
 	LDQ	x0, p_hp
 	LDQ	x1, p_max
 	mov	x2, 18
 	bl	_hp_bar
-	LA	x1, tmpa
-	LA	x2, tmpb
-	SAY	"  \023%-7s\001\021%s\001"
-	mov	x8, 24
-	sub	x1, x8, x20
+	LA	x0, tmpb
+	STR	x1, "  \023%-7s\001\021Turn %ld\001"
+	LA	x2, tmpa
+	LDQ	x3, p_turns
+	bl	_sfmt
+	LA	x0, tmpb
+	bl	_vislen
+	mov	x8, 27
+	sub	x19, x8, x0
+	LA	x1, tmpb
+	SAY	"%s"
 	STR	x0, " "
+	mov	x1, x19
 	bl	_rep
 	SAY	"│\n"
 	LDQ	x1, p_atk
 	LDQ	x2, p_arm
 	LDQ	x3, p_gold
 	LDQ	x4, p_pot
-	SAY	"│ \023ATK\001 %-3ld \023ARM\001 %-3ld \007Gold\001 %-5ld \017Potions\001 %-3ld               │\n"
+	STR	x0, " \023ATK\001 %-3ld \023ARM\001 %-3ld \007Gold\001 %-5ld \017Potions\001 %ld"
+	bl	_pline
+	LDQ	x1, p_lvl
+	LDQ	x2, p_xp
+	mov	x8, 20
+	mul	x3, x1, x8
+	LDQ	x4, depth
+	STR	x0, " \023Lv\001  %-3ld \023XP\001 %ld/%ld   \020Floor\001 %ld/3"
+	bl	_pline
 	SAY	"\022╰"
 	STR	x0, "─"
 	mov	x1, 50
 	bl	_rep
 	SAY	"╯\001\n"
+	LEAVE
+
+// vislen(x0 str) -> printed width: code points, colour tokens excluded
+_vislen:
+	mov	x1, 0
+1:	ldrb	w2, [x0], 1
+	cbz	w2, 2f
+	cmp	w2, 32
+	b.lo	1b
+	and	w3, w2, 0xC0
+	cmp	w3, 0x80
+	cinc	x1, x1, ne
+	b	1b
+2:	mov	x0, x1
+	ret
+
+// pline(x0 fmt, x1..x6 args): one status-panel row, padded to the border.
+_pline:
+	ENTER
+	mov	x7, x6
+	mov	x6, x5
+	mov	x5, x4
+	mov	x4, x3
+	mov	x3, x2
+	mov	x2, x1
+	mov	x1, x0
+	LA	x0, tmpc
+	bl	_sfmt
+	LA	x0, tmpc
+	bl	_vislen
+	mov	x8, 50
+	sub	x19, x8, x0
+	LA	x1, tmpc
+	SAY	"│%s"
+	STR	x0, " "
+	mov	x1, x19
+	bl	_rep
+	SAY	"│\n"
 	LEAVE
 
 // render_top(x0 art, x1 label): clear, art, room label.
@@ -822,8 +875,85 @@ _foe_hit:
 	LDQ	x8, m_atk
 	sub	x0, x8, 1
 	add	x1, x8, 1
-	bl	_randint
+	LDQ	x9, boss
+	cbz	x9, 1f
+	ADDQ	boss_turns, 1                   // every third King turn: the espresso
+	LDQ	x9, boss_turns
+	mov	x10, 3
+	udiv	x11, x9, x10
+	msub	x11, x11, x10, x9
+	cbnz	x11, 1f
+	LOG	"\017  ☕ The King hurls a scalding espresso!\001"
+	LDQ	x8, m_atk
+	add	x0, x8, 3
+	add	x1, x8, 5
+1:	bl	_randint
 	bl	_hurt
+	LEAVE
+
+// boss_check: below half HP the King heals once.
+_boss_check:
+	ENTER
+	LDQ	x8, boss
+	cbz	x8, 1f
+	LDQ	x8, boss_healed
+	cbnz	x8, 1f
+	LDQ	x8, foe_hp
+	LDQ	x9, m_hp
+	lsl	x10, x8, 1
+	cmp	x10, x9
+	b.gt	1f
+	add	x8, x8, 15
+	cmp	x8, x9
+	csel	x8, x8, x9, le
+	STQ	x8, foe_hp
+	mov	x8, 1
+	STQ	x8, boss_healed
+	LOG	"\017  The King gulps a triple ristretto. +15 HP.\001"
+1:	LEAVE
+
+_setup_boss:
+	ENTER
+	LA	x0, m_name
+	STR	x1, "the Caffeinated King"
+	mov	x2, 256
+	bl	_strlcpy
+	mov	x8, 80
+	STQ	x8, m_hp
+	mov	x8, 8
+	STQ	x8, m_atk
+	mov	x8, 100
+	STQ	x8, m_gold
+	STR	x8, "He sips. He smiles. He sets the cup down very carefully."
+	STQ	x8, m_flavor
+	LA	x8, art_king
+	STQ	x8, m_art
+	mov	x8, 1
+	STQ	x8, boss
+	STQ	xzr, boss_turns
+	STQ	xzr, boss_healed
+	LEAVE
+
+// gain_xp(x0 amount) -> levels gained. Level n needs n*20 XP.
+_gain_xp:
+	ENTER
+	ADDQ	p_xp, x0
+	mov	x19, 0
+1:	LDQ	x8, p_xp
+	LDQ	x9, p_lvl
+	mov	x10, 20
+	mul	x10, x9, x10
+	cmp	x8, x10
+	b.lt	2f
+	sub	x8, x8, x10
+	STQ	x8, p_xp
+	ADDQ	p_lvl, 1
+	ADDQ	p_max, 4
+	ADDQ	p_hp, 4
+	ADDQ	p_atk, 1
+	add	x19, x19, 1
+	b	1b
+2:	mov	x0, x19
 	LEAVE
 
 // combat -> x0: 0 won, 1 fled, 2 dead
@@ -841,7 +971,7 @@ _combat:
 	cmp	x8, 0
 	b.le	90f
 	bl	_render_combat
-	STR	x0, "  \003[a]ttack  [p]otion  [r]un >\001 "
+	STR	x0, "  \003[a]ttack  [h]eavy  [p]otion  [r]un >\001 "
 	mov	x1, 1
 	bl	_readline
 	ldrb	w19, [x0]
@@ -850,6 +980,8 @@ _combat:
 	cbnz	w8, 40f
 	cmp	w19, 'a'
 	b.eq	10f
+	cmp	w19, 'h'
+	b.eq	15f
 	cmp	w19, 'p'
 	b.eq	20f
 	cmp	w19, 'r'
@@ -866,14 +998,31 @@ _combat:
 	LA	x2, m_name
 	mov	x3, x20
 	LOG	"\005  → You hit %s for %ld.\001"
-	LDQ	x8, foe_hp
+11:	LDQ	x8, foe_hp
 	cmp	x8, 0
 	b.le	90f
+	bl	_boss_check
 	bl	_foe_hit
 	mov	x3, x0
 	LA	x2, m_name
 	LOG	"\004  ← %s hits you for %ld.\001"
 	b	1b
+15:	mov	x0, 2                           // heavy: double damage or a miss
+	bl	_rnd
+	cbnz	x0, 16f
+	LDQ	x8, p_atk
+	sub	x0, x8, 1
+	add	x1, x8, 2
+	bl	_randint
+	lsl	x20, x0, 1
+	LDQ	x8, foe_hp
+	sub	x8, x8, x20
+	STQ	x8, foe_hp
+	mov	x2, x20
+	LOG	"\002\005  ⇒ A crushing blow! %ld damage.\001"
+	b	11b
+16:	LOG	"\003  You swing wide and miss.\001"
+	b	11b
 20:	LDQ	x8, p_pot                       // potion
 	cmp	x8, 0
 	b.gt	21f
@@ -889,7 +1038,11 @@ _combat:
 	LA	x2, m_name
 	LOG	"\004  ← %s clips you for %ld mid-sip.\001"
 	b	1b
-30:	mov	x0, 2                           // run
+30:	LDQ	x8, boss                        // run
+	cbz	x8, 32f
+	LOG	"\004  The King's gaze pins you in place.\001"
+	b	31f
+32:	mov	x0, 2
 	bl	_rnd
 	cbnz	x0, 31f
 	mov	x0, 1
@@ -1025,6 +1178,10 @@ _handle_room:
 	b.eq	70f
 	cmp	w21, 6
 	b.eq	80f
+	cmp	w21, 7
+	b.eq	85f
+	cmp	w21, 8
+	b.eq	90f
 
 	LA	x0, art_empty                   // empty
 	LA	x1, lbl_empty
@@ -1035,7 +1192,7 @@ _handle_room:
 	LEAVE
 
 30:	bl	_procgen_monster                // monster
-	bl	_combat
+300:	bl	_combat
 	cmp	x0, 2
 	b.ne	31f
 	mov	x0, 1
@@ -1045,6 +1202,9 @@ _handle_room:
 	cbnz	x21, 32f
 	LDQ	x8, m_gold
 	ADDQ	p_gold, x8
+	LDQ	x0, m_gold
+	bl	_gain_xp
+	mov	x22, x0
 32:	LA	x0, art_empty
 	LA	x1, lbl_empty
 	bl	_render_top
@@ -1055,6 +1215,11 @@ _handle_room:
 	SAY	"\005  ✓ %s collapses.\001\n"
 	LDQ	x1, m_gold
 	SAY	"\007  +%ld gold.\001\n"
+	LDQ	x1, m_gold
+	SAY	"\023  +%ld XP.\001\n"
+	cbz	x22, 34f
+	LDQ	x1, p_lvl
+	SAY	"\002\005  ★ LEVEL UP! You are level %ld.\001\n"
 34:	bl	_render_bottom
 	mov	x0, 0
 	LEAVE
@@ -1105,6 +1270,9 @@ _handle_room:
 	ldr	x0, [x21, 8]
 	ldr	x1, [x21, 16]
 	bl	_randint
+	LDQ	x8, depth
+	add	x0, x0, x8
+	sub	x0, x0, 1
 	bl	_hurt
 	mov	x22, x0
 	strb	wzr, [x20, x19]
@@ -1195,7 +1363,123 @@ _handle_room:
 	mov	x0, 0
 	LEAVE
 
+85:	LA	x0, art_campfire                // campfire
+	LA	x1, lbl_campfire
+	bl	_render_top
+	SAY	"\006  Embers glow in a ring of stones. Someone left a kettle.\001\n"
+	bl	_render_bottom
+	strb	wzr, [x20, x19]
+	STR	x0, "\n  \003Rest here? [y/N] >\001 "
+	mov	x1, 1
+	bl	_readline
+	ldrb	w8, [x0]
+	cmp	w8, 'y'
+	b.ne	87f
+	ldrb	w8, [x0, 1]
+	cbnz	w8, 87f
+	mov	x0, 100
+	bl	_rnd
+	cmp	x0, 25
+	b.hs	86f
+	bl	_procgen_monster                // 25%: ambushed in your sleep
+	STR	x8, "You wake to something standing over you."
+	STQ	x8, m_flavor
+	b	300b
+86:	LDQ	x8, p_max
+	STQ	x8, p_hp
+	LA	x0, art_campfire
+	LA	x1, lbl_campfire
+	bl	_render_top
+	SAY	"\006  You doze by the embers. The kettle sings.\001\n\005  HP fully restored.\001\n"
+	bl	_render_bottom
+87:	mov	x0, 0
+	LEAVE
+
+90:	mov	x0, 5                           // riddle
+	bl	_rnd
+	LA	x8, riddles
+	mov	x9, 24
+	madd	x21, x0, x9, x8
+	LA	x0, art_owl
+	LA	x1, lbl_riddle
+	bl	_render_top
+	ldr	x1, [x21]
+	SAY	"\020  An owl statue clutching a mug blinks awake.\001\n  '%s'\n"
+	bl	_render_bottom
+	strb	wzr, [x20, x19]
+	STR	x0, "\n  \003Your answer >\001 "
+	mov	x1, 1
+	bl	_readline
+	mov	x22, x0
+	ldr	x1, [x21, 8]
+	bl	_strstr
+	cbnz	x0, 91f
+	mov	x0, x22
+	ldr	x1, [x21, 16]
+	bl	_strstr
+	cbnz	x0, 91f
+	LDQ	x8, depth
+	add	x0, x8, 3
+	bl	_hurt
+	mov	x23, x0
+	LA	x0, art_owl
+	LA	x1, lbl_riddle
+	bl	_render_top
+	ldr	x1, [x21, 8]
+	SAY	"\003  The owl's eyes flash red. (It was '%s'.)\001\n"
+	mov	x1, x23
+	SAY	"\004  -%ld HP.\001\n"
+	bl	_render_bottom
+	LDQ	x8, p_hp
+	cmp	x8, 0
+	cset	x0, le
+	LEAVE
+91:	mov	x0, 2
+	bl	_rnd
+	cbnz	x0, 92f
+	ADDQ	p_atk, 1
+	STR	x22, "\005  ATK +1.\001"
+	b	93f
+92:	ADDQ	p_gold, 20
+	STR	x22, "\007  +20 gold.\001"
+93:	LA	x0, art_owl
+	LA	x1, lbl_riddle
+	bl	_render_top
+	mov	x1, x22
+	SAY	"\005  The owl hoots, pleased. Something clinks at your feet.\001\n%s\n"
+	bl	_render_bottom
+	mov	x0, 0
+	LEAVE
+
 // ---------- main loop ----------
+
+// gen_dungeon: a fresh 5x5 floor, index = y*5 + x
+_gen_dungeon:
+	ENTER
+	LA	x19, rooms
+	LA	x20, visited
+	mov	x21, 0
+2:	mov	x8, 0
+	cbz	x21, 3f                         // entrance and exit are empty
+	cmp	x21, 24
+	b.eq	3f
+	mov	x0, 100
+	bl	_rnd
+	LA	x9, room_cum
+	mov	x8, 0
+4:	ldrb	w10, [x9, x8]
+	cmp	x0, x10
+	b.lo	3f
+	add	x8, x8, 1
+	b	4b
+3:	strb	w8, [x19, x21]
+	strb	wzr, [x20, x21]
+	add	x21, x21, 1
+	cmp	x21, 25
+	b.lo	2b
+	mov	w8, 1
+	strb	w8, [x20]
+	LEAVE
 
 _play:
 	ENTER
@@ -1228,40 +1512,23 @@ _play:
 	STQ	xzr, p_y
 	STQ	xzr, p_turns
 
-	LA	x19, rooms                      // dungeon: 5x5, index = y*5 + x
-	LA	x20, visited
-	mov	x21, 0
-2:	mov	x8, 0
-	cbz	x21, 3f                         // entrance and exit are empty
-	cmp	x21, 24
-	b.eq	3f
-	mov	x0, 100
-	bl	_rnd
-	LA	x9, room_cum
-	mov	x8, 0
-4:	ldrb	w10, [x9, x8]
-	cmp	x0, x10
-	b.lo	3f
-	add	x8, x8, 1
-	b	4b
-3:	strb	w8, [x19, x21]
-	strb	wzr, [x20, x21]
-	add	x21, x21, 1
-	cmp	x21, 25
-	b.lo	2b
-	mov	w8, 1
-	strb	w8, [x20]
+	mov	x8, 1
+	STQ	x8, p_lvl
+	STQ	x8, depth
+	STQ	xzr, p_xp
+	STQ	xzr, boss
+	bl	_gen_dungeon
 
 	LA	x0, art_start
 	LA	x1, lbl_start
 	bl	_render_top
 	LA	x1, p_name
-	SAY	"\023  Welcome, %s.\001\n\003  The King hoards every bean north of the river.\001\n\003  Reach the > tile in the far corner. Don't die.\001\n"
+	SAY	"\023  Welcome, %s.\001\n\003  The King hoards every bean north of the river.\001\n\003  Three floors down, he waits. Find the > on each floor.\001\n"
 	bl	_render_bottom
 
 10:	LDQ	x8, p_hp
 	cmp	x8, 0
-	b.le	99f
+	b.le	20f
 	STR	x0, "\n  \003[w/a/s/d] move  [i] info  [q] quit >\001 "
 	mov	x1, 1
 	bl	_readline
@@ -1316,7 +1583,7 @@ _play:
 	b	10b
 16:	SAY	"\003  A wall. Rude.\001\n"
 	b	10b
-17:	SAY	"\003  Find > in the far corner. @ is you. · visited. ? unknown.\001\n"
+17:	SAY	"\003  Find > in the far corner of each floor. @ is you. · visited. ? unknown.\001\n"
 	b	10b
 18:	SAY	"\003\n  You walk back into the daylight. Story untold.\001\n"
 	LEAVE
@@ -1325,30 +1592,80 @@ _play:
 	bl	_divider
 	STR	x0, "\004  You crumple. The King sips, somewhere, smug.\001\n"
 	bl	_slow
-	LDQ	x1, p_turns
-	LDQ	x2, p_gold
-	STR	x0, "\003  Final: turn %ld, gold %ld.\001\n"
+	LDQ	x1, depth
+	LDQ	x2, p_lvl
+	LDQ	x3, p_turns
+	LDQ	x4, p_gold
+	STR	x0, "\003  Final: floor %ld, level %ld, turn %ld, gold %ld.\001\n"
 	bl	_slow
 	bl	_divider
 	LEAVE
 
-30:	bl	_clear                          // victory
+30:	LDQ	x8, depth
+	cmp	x8, 3
+	b.ge	35f
+	bl	_clear                          // stairs down
+	LA	x0, art_stairs
+	bl	_show_art
+	SAY	"\n"
+	bl	_divider
+	STR	x0, "\007  A spiral stair winds down into the dark.\001\n"
+	bl	_slow
+	ADDQ	depth, 1
+	LDQ	x1, depth
+	STR	x0, "\003  Floor %ld. The air smells of burnt sugar.\001\n"
+	bl	_slow
+	bl	_divider
+	STR	x0, "\n  \003[enter] descend >\001 "
+	mov	x1, 0
+	bl	_readline
+	bl	_gen_dungeon
+	STQ	xzr, p_x
+	STQ	xzr, p_y
+	LA	x0, art_start
+	LA	x1, lbl_start
+	bl	_render_top
+	LDQ	x1, depth
+	SAY	"\023  Floor %ld of 3.\001\n\003  The monsters down here have had more coffee.\001\n"
+	bl	_render_bottom
+	b	10b
+
+35:	bl	_clear                          // the King
+	LA	x0, art_king
+	bl	_show_art
+	SAY	"\n"
+	bl	_divider
+	STR	x0, "\007  A throne of burlap sacks. On it, steaming, the King.\001\n"
+	bl	_slow
+	STR	x0, "\004  'You came for my last bean? Come and take it.'\001\n"
+	bl	_slow
+	bl	_divider
+	STR	x0, "\n  \003[enter] fight >\001 "
+	mov	x1, 0
+	bl	_readline
+	bl	_setup_boss
+	bl	_combat
+	cmp	x0, 2
+	b.eq	20b
+
+	bl	_clear                          // victory
 	LA	x0, art_exit
 	bl	_show_art
 	SAY	"\n"
 	bl	_divider
-	STR	x0, "\007  You reach the back of the crypt. A door.\001\n"
+	STR	x0, "\007  The King slumps into his sacks. Behind the throne: a kitchen.\001\n"
 	bl	_slow
-	STR	x0, "\007  Behind it: a kitchen. On the counter: the King's last bean.\001\n"
+	STR	x0, "\007  On the counter: the King's last bean.\001\n"
 	bl	_slow
 	STR	x0, "\002\007  You take it.\001\n"
 	bl	_slow
 	bl	_divider
 	SAY	"\n"
 	LDQ	x1, p_turns
-	LDQ	x2, p_gold
-	LDQ	x3, p_hp
-	SAY	"\002\005  ★ VICTORY in %ld turns with %ld gold and %ld HP.\001\n\n"
+	LDQ	x2, p_lvl
+	LDQ	x3, p_gold
+	LDQ	x4, p_hp
+	SAY	"\002\005  ★ VICTORY in %ld turns at level %ld, with %ld gold and %ld HP.\001\n\n"
 99:	LEAVE
 
 	.globl _main
@@ -1400,6 +1717,12 @@ log_n:		.quad 0
 t_kind:		.quad 0
 t_lo:		.quad 0
 t_hi:		.quad 0
+p_lvl:		.quad 0
+p_xp:		.quad 0
+depth:		.quad 0
+boss:		.quad 0
+boss_turns:	.quad 0
+boss_healed:	.quad 0
 
 .zerofill __DATA,__bss,p_name,256,3
 .zerofill __DATA,__bss,m_name,256,3
@@ -1408,6 +1731,7 @@ t_hi:		.quad 0
 .zerofill __DATA,__bss,msgbuf,256,3
 .zerofill __DATA,__bss,tmpa,256,3
 .zerofill __DATA,__bss,tmpb,256,3
+.zerofill __DATA,__bss,tmpc,256,3
 .zerofill __DATA,__bss,logbuf,1024,3
 .zerofill __DATA,__bss,rooms,32,3
 .zerofill __DATA,__bss,visited,32,3
@@ -1538,6 +1862,37 @@ lbl_fountain:	.asciz "\002\016  ≈  FOUNTAIN\001\n"
 lbl_merchant:	.asciz "\002\006  $  MERCHANT\001\n"
 lbl_exit:	.asciz "\002\007  >  EXIT\001\n"
 lbl_start:	.asciz "\002\023  @  CRYPT ENTRANCE\001\n"
+art_campfire:	.ascii "\007"
+	.ascii "              (\n"
+	.ascii "             ) )\n"
+	.ascii "            ( ( (\n"
+	.ascii "           .-'-'-.\n"
+	.ascii "          '~~~~~~~'\n"
+	.asciz "\001"
+art_owl:	.ascii "\020"
+	.ascii "             ___\n"
+	.ascii "            (o,o)       \"answer me this.\"\n"
+	.ascii "            {`\"'}\n"
+	.ascii "            -\"-\"-\n"
+	.asciz "\001"
+art_stairs:	.ascii "\021"
+	.ascii "           _______\n"
+	.ascii "          |_____  |\n"
+	.ascii "              |__ |___\n"
+	.ascii "                 |___ |___\n"
+	.ascii "                     |____|\n"
+	.asciz "\001"
+art_king:	.ascii "\007"
+	.ascii "             _/\\_/\\_/\\_\n"
+	.ascii "            |          |       \"MORE.\"\n"
+	.ascii "            |  (o)(o)  |\n"
+	.ascii "            |    __    |\n"
+	.ascii "             \\  \\__/  /\n"
+	.ascii "          ____\\______/____\n"
+	.ascii "         /  ~  K I N G  ~  \\\n"
+	.asciz "\001"
+lbl_campfire:	.asciz "\002\006  ♨  CAMPFIRE\001\n"
+lbl_riddle:	.asciz "\002\020  ?  RIDDLE\001\n"
 esc_R:	.asciz "\033[0m"
 esc_B:	.asciz "\033[1m"
 esc_DIM:	.asciz "\033[2m"
@@ -1683,10 +2038,29 @@ fountain_lines:		//
 	.quad Ls97
 	.quad Ls98
 	.quad Ls99
-room_cum:		// cumulative weights: empty monster treasure trap shrine merchant fountain
-	.byte 10, 40, 58, 70, 78, 86, 100
+riddles:		// question, answer, alternative answer
+	.quad Lr0, Lr0a, Lr0b
+	.quad Lr1, Lr1a, Lr1b
+	.quad Lr2, Lr2a, Lr2a
+	.quad Lr3, Lr3a, Lr3a
+	.quad Lr4, Lr4a, Lr4b
+room_cum:		// cumulative weights: empty monster treasure trap shrine merchant fountain campfire riddle
+	.byte 8, 38, 54, 65, 72, 79, 90, 95, 100
 
 	.section __TEXT,__cstring,cstring_literals
+Lr0:	.asciz "The more you take, the more you leave behind. What are they?"
+Lr0a:	.asciz "footstep"
+Lr0b:	.asciz "step"
+Lr1:	.asciz "I am ground, tamped and pulled, but never pushed. What am I?"
+Lr1a:	.asciz "espresso"
+Lr1b:	.asciz "coffee"
+Lr2:	.asciz "What has a neck and a cap, but no head?"
+Lr2a:	.asciz "bottle"
+Lr3:	.asciz "What gets wetter the more it dries?"
+Lr3a:	.asciz "towel"
+Lr4:	.asciz "I have keys but open no locks. What am I?"
+Lr4a:	.asciz "piano"
+Lr4b:	.asciz "keyboard"
 Ls0:	.asciz "a"
 Ls1:	.asciz "sleepy goblin"
 Ls2:	.asciz "It's clutching a tiny mug. Steam rises from it."
