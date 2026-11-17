@@ -13,6 +13,8 @@ You descend three randomly generated 5×5 floors, each with its stairs in the fa
 
 ## Features
 
+- Pick a calling: Knight (+1 ARM, +4 HP), Barista (more and stronger
+  potions) or Rogue (+1 ATK, crits, better at running away)
 - ANSI-colored terminal UI with rounded box borders
 - HP bars that shift green → yellow → red
 - ASCII art for every room type and every monster
@@ -26,11 +28,19 @@ You descend three randomly generated 5×5 floors, each with its stairs in the fa
 - Shrines, fountains, traps, treasure, a merchant with a mystery box
 - Campfires: rest to full HP, if nothing finds you in your sleep
 - An owl statue that asks riddles: answer right for loot, wrong and it bites
-- Seven base monsters (cursed barista, espresso golem, etc.) modulated by
+- Ten base monsters (cursed barista, espresso golem, latte-art lich, etc.) modulated by
   procedural prefixes and suffixes — you'll fight things like
   *an artisanal moss-covered skeleton of the second pour*
 - Procedurally generated weapons and armor (`[material] [type] of [theme]`),
   with stats driven by the name itself
+- Monster traits: venomous (poisons you), evasive (dodges), armored (shrugs
+  off damage), light-fingered (steals gold; kill it to get it back),
+  regenerating
+- Coffee beans: chew one mid-fight for +3 ATK until the fight ends. Found as
+  loot or bought from the merchant
+- A dice goblin who'll roll 2d6 against you for 5, 10 or 20 gold
+- A score at the end of every run (floors cleared, level, gold, +500 for the
+  King); your best is kept in `~/.crypt-best`
 
 ## Procedural generation
 
@@ -65,7 +75,7 @@ i               info
 q               quit
 ```
 
-In combat: `a` attack, `h` heavy attack, `p` drink potion, `r` run.
+In combat: `a` attack, `h` heavy attack, `b` chew a bean, `p` drink potion, `r` run.
 
 ## Requirements
 

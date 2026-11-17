@@ -411,10 +411,10 @@ _article:
 // Fills m_*: a base monster, sometimes with a prefix and/or suffix.
 _procgen_monster:
 	ENTER
-	mov	x0, 7
+	mov	x0, 10
 	bl	_rnd
 	LA	x19, monsters
-	mov	x8, 56
+	mov	x8, 64
 	madd	x19, x0, x8, x19
 	ldr	x20, [x19, 16]                  // hp
 	ldr	x21, [x19, 24]                  // atk
@@ -482,6 +482,8 @@ _procgen_monster:
 	STQ	x8, m_flavor
 	ldr	x8, [x19, 48]
 	STQ	x8, m_art
+	ldr	x8, [x19, 56]
+	STQ	x8, m_trait
 	LA	x0, m_name
 	STR	x1, "%s %s%s%s%s%s"
 	mov	x2, x27
@@ -493,7 +495,7 @@ _procgen_monster:
 	bl	_sfmt
 	LEAVE
 
-// Fills t_name, t_kind (0 gold, 1 potion, 2 weapon, 3 armor), t_lo, t_hi.
+// Fills t_name, t_kind (0 gold, 1 potion, 2 weapon, 3 armor, 4 beans), t_lo, t_hi.
 _procgen_treasure:
 	ENTER
 	mov	x0, 100
@@ -583,7 +585,9 @@ _procgen_treasure:
 	STQ	x23, t_kind
 	STQ	x21, t_lo
 	LEAVE
-4:	mov	x0, 12                          // potion
+4:	cmp	x19, 88
+	b.hs	5f
+	mov	x0, 12                          // potion
 	bl	_rnd
 	LA	x8, potion_adj
 	ldr	x20, [x8, x0, lsl 3]
@@ -596,6 +600,15 @@ _procgen_treasure:
 	bl	_sfmt
 	mov	x8, 1
 	STQ	x8, t_kind
+	LEAVE
+5:	LA	x0, t_name                      // coffee beans
+	STR	x1, "a twist of paper full of coffee beans"
+	mov	x2, 256
+	bl	_strlcpy
+	mov	x8, 4
+	STQ	x8, t_kind
+	mov	x8, 2
+	STQ	x8, t_lo
 	LEAVE
 
 // ---------- panels ----------
@@ -671,10 +684,17 @@ _status:
 	cmp	w10, 0x80
 	cinc	x19, x19, ne
 	b	1b
-2:	mov	x8, 47
+2:	LDQ	x8, p_class
+	LA	x9, class_names
+	ldr	x20, [x9, x8, lsl 3]
+	mov	x0, x20
+	bl	_strlen
+	mov	x8, 42
 	sub	x19, x8, x19
+	sub	x19, x19, x0
 	LA	x1, p_name
-	SAY	"\022╭─ %s "
+	mov	x2, x20
+	SAY	"\022╭─ %s the %s "
 	STR	x0, "─"
 	mov	x1, x19
 	bl	_rep
@@ -708,7 +728,8 @@ _status:
 	LDQ	x2, p_arm
 	LDQ	x3, p_gold
 	LDQ	x4, p_pot
-	STR	x0, " \023ATK\001 %-3ld \023ARM\001 %-3ld \007Gold\001 %-5ld \017Potions\001 %ld"
+	LDQ	x5, p_beans
+	STR	x0, " \023ATK\001 %-3ld \023ARM\001 %-3ld \007Gold\001 %-5ld \017Potions\001 %-3ld \024Beans\001 %ld"
 	bl	_pline
 	LDQ	x1, p_lvl
 	LDQ	x2, p_xp
@@ -838,7 +859,12 @@ _render_combat:
 	b	1b
 3:	LA	x1, upbuf
 	SAY	"\002\004  ⚔  %s\001\n"
-	bl	_divider
+	LDQ	x8, m_trait
+	cbz	x8, 7f
+	LA	x9, trait_names
+	ldr	x1, [x9, x8, lsl 3]
+	SAY	"\003  %s\001\n"
+7:	bl	_divider
 	SAY	"  \023You\001    "
 	LDQ	x0, p_hp
 	LDQ	x1, p_max
@@ -846,7 +872,14 @@ _render_combat:
 	bl	_hp_bar
 	LDQ	x1, p_hp
 	LDQ	x2, p_max
-	SAY	"  \023%ld/%ld\001\n"
+	SAY	"  \023%ld/%ld\001"
+	LDQ	x1, c_buff
+	cbz	x1, 8f
+	SAY	"  \024+%ld ATK\001"
+8:	LDQ	x8, p_poison
+	cbz	x8, 9f
+	SAY	"  \004poisoned\001"
+9:	SAY	"\n"
 	SAY	"  \004Foe\001    "
 	LDQ	x0, foe_hp
 	LDQ	x1, m_hp
@@ -932,6 +965,7 @@ _setup_boss:
 	STQ	x8, boss
 	STQ	xzr, boss_turns
 	STQ	xzr, boss_healed
+	STQ	xzr, m_trait
 	LEAVE
 
 // gain_xp(x0 amount) -> levels gained. Level n needs n*20 XP.
@@ -956,12 +990,112 @@ _gain_xp:
 2:	mov	x0, x19
 	LEAVE
 
+// roll_dmg -> a normal hit's damage, including chewed beans
+_roll_dmg:
+	ENTER
+	LDQ	x8, p_atk
+	LDQ	x9, c_buff
+	add	x8, x8, x9
+	sub	x0, x8, 1
+	add	x1, x8, 2
+	bl	_randint
+	LEAVE
+
+// apply_hit(x0 dmg) -> damage dealt after the foe's trait (0 = dodged)
+_apply_hit:
+	ENTER
+	mov	x19, x0
+	LDQ	x8, m_trait
+	cmp	x8, 2                           // evasive: 25% dodge
+	b.ne	1f
+	mov	x0, 100
+	bl	_rnd
+	cmp	x0, 25
+	b.hs	2f
+	LA	x2, m_name
+	LOG	"\003  %s flickers aside. Miss.\001"
+	mov	x0, 0
+	LEAVE
+1:	cmp	x8, 3                           // armored: -2, at least 1
+	b.ne	2f
+	sub	x19, x19, 2
+	cmp	x19, 1
+	csinc	x19, x19, xzr, ge
+2:	LDQ	x8, foe_hp
+	sub	x8, x8, x19
+	STQ	x8, foe_hp
+	mov	x0, x19
+	LEAVE
+
+// foe_turn(x0 hit message fmt): the foe heals/hits/applies its trait, then poison ticks.
+_foe_turn:
+	ENTER
+	mov	x19, x0
+	bl	_boss_check
+	LDQ	x8, m_trait
+	cmp	x8, 5                           // regenerating
+	b.ne	1f
+	LDQ	x8, foe_hp
+	LDQ	x9, m_hp
+	cmp	x8, x9
+	b.ge	1f
+	add	x8, x8, 2
+	cmp	x8, x9
+	csel	x8, x8, x9, le
+	STQ	x8, foe_hp
+	LA	x2, m_name
+	LOG	"\005  %s knits back together. +2 HP.\001"
+1:	bl	_foe_hit
+	mov	x20, x0
+	bl	_logslot
+	mov	x1, x19
+	LA	x2, m_name
+	mov	x3, x20
+	bl	_sfmt
+	LDQ	x8, m_trait
+	cmp	x8, 1                           // venomous: 30% poison for 3 turns
+	b.ne	2f
+	mov	x0, 100
+	bl	_rnd
+	cmp	x0, 30
+	b.hs	4f
+	mov	x8, 3
+	STQ	x8, p_poison
+	LOG	"\004  Venom seeps into the wound.\001"
+	b	4f
+2:	cmp	x8, 4                           // light-fingered: 30% steal up to 5 gold
+	b.ne	4f
+	LDQ	x9, p_gold
+	cbz	x9, 4f
+	mov	x0, 100
+	bl	_rnd
+	cmp	x0, 30
+	b.hs	4f
+	LDQ	x9, p_gold
+	mov	x10, 5
+	cmp	x9, x10
+	csel	x21, x9, x10, lt
+	sub	x9, x9, x21
+	STQ	x9, p_gold
+	ADDQ	m_gold, x21
+	mov	x2, x21
+	LOG	"\007  It pockets %ld of your gold.\001"
+4:	LDQ	x8, p_poison
+	cbz	x8, 5f
+	sub	x8, x8, 1
+	STQ	x8, p_poison
+	ADDQ	p_hp, -2
+	LOG	"\004  Venom burns. -2 HP.\001"
+5:	LEAVE
+
 // combat -> x0: 0 won, 1 fled, 2 dead
 _combat:
 	ENTER
 	LDQ	x8, m_hp
 	STQ	x8, foe_hp
 	STQ	xzr, log_n
+	STQ	xzr, c_buff
+	STQ	xzr, p_poison
 	LDQ	x2, m_flavor
 	LOG	"\003\023  %s\001"
 1:	LDQ	x8, foe_hp
@@ -971,7 +1105,7 @@ _combat:
 	cmp	x8, 0
 	b.le	90f
 	bl	_render_combat
-	STR	x0, "  \003[a]ttack  [h]eavy  [p]otion  [r]un >\001 "
+	STR	x0, "  \003[a]ttack  [h]eavy  [b]ean  [p]otion  [r]un >\001 "
 	mov	x1, 1
 	bl	_readline
 	ldrb	w19, [x0]
@@ -982,47 +1116,55 @@ _combat:
 	b.eq	10f
 	cmp	w19, 'h'
 	b.eq	15f
+	cmp	w19, 'b'
+	b.eq	25f
 	cmp	w19, 'p'
 	b.eq	20f
 	cmp	w19, 'r'
 	b.eq	30f
 	b	40f
-10:	LDQ	x8, p_atk                       // attack
-	sub	x0, x8, 1
-	add	x1, x8, 2
-	bl	_randint
+
+10:	bl	_roll_dmg                       // attack
 	mov	x20, x0
-	LDQ	x8, foe_hp
-	sub	x8, x8, x20
-	STQ	x8, foe_hp
+	mov	x21, 0
+	LDQ	x8, p_class
+	cmp	x8, 2                           // rogue: 15% crit
+	b.ne	12f
+	mov	x0, 100
+	bl	_rnd
+	cmp	x0, 15
+	b.hs	12f
+	lsl	x20, x20, 1
+	mov	x21, 1
+12:	mov	x0, x20
+	bl	_apply_hit
+	cbz	x0, 11f
+	mov	x3, x0
 	LA	x2, m_name
-	mov	x3, x20
-	LOG	"\005  → You hit %s for %ld.\001"
+	cbz	x21, 13f
+	LOG	"\002\005  → Critical! You hit %s for %ld.\001"
+	b	11f
+13:	LOG	"\005  → You hit %s for %ld.\001"
 11:	LDQ	x8, foe_hp
 	cmp	x8, 0
 	b.le	90f
-	bl	_boss_check
-	bl	_foe_hit
-	mov	x3, x0
-	LA	x2, m_name
-	LOG	"\004  ← %s hits you for %ld.\001"
+	STR	x0, "\004  ← %s hits you for %ld.\001"
+	bl	_foe_turn
 	b	1b
+
 15:	mov	x0, 2                           // heavy: double damage or a miss
 	bl	_rnd
 	cbnz	x0, 16f
-	LDQ	x8, p_atk
-	sub	x0, x8, 1
-	add	x1, x8, 2
-	bl	_randint
-	lsl	x20, x0, 1
-	LDQ	x8, foe_hp
-	sub	x8, x8, x20
-	STQ	x8, foe_hp
-	mov	x2, x20
+	bl	_roll_dmg
+	lsl	x0, x0, 1
+	bl	_apply_hit
+	cbz	x0, 11b
+	mov	x2, x0
 	LOG	"\002\005  ⇒ A crushing blow! %ld damage.\001"
 	b	11b
 16:	LOG	"\003  You swing wide and miss.\001"
 	b	11b
+
 20:	LDQ	x8, p_pot                       // potion
 	cmp	x8, 0
 	b.gt	21f
@@ -1030,31 +1172,55 @@ _combat:
 	b	1b
 21:	ADDQ	p_pot, -1
 	mov	x0, 10
-	bl	_heal
+	LDQ	x8, p_class
+	cmp	x8, 1                           // barista brews them stronger
+	b.ne	22f
+	mov	x0, 15
+22:	bl	_heal
 	mov	x2, x0
 	LOG	"\005  ✚ You drink. +%ld HP.\001"
-	bl	_foe_hit
-	mov	x3, x0
-	LA	x2, m_name
-	LOG	"\004  ← %s clips you for %ld mid-sip.\001"
+	STR	x0, "\004  ← %s clips you for %ld mid-sip.\001"
+	bl	_foe_turn
 	b	1b
+
+25:	LDQ	x8, p_beans                     // bean: +3 ATK for the fight
+	cmp	x8, 0
+	b.gt	26f
+	LOG	"\003  No beans. A tragedy.\001"
+	b	1b
+26:	ADDQ	p_beans, -1
+	ADDQ	c_buff, 3
+	LOG	"\024  You chew a coffee bean. ATK +3 this fight. Your eye twitches.\001"
+	STR	x0, "\004  ← %s hits you for %ld.\001"
+	bl	_foe_turn
+	b	1b
+
 30:	LDQ	x8, boss                        // run
 	cbz	x8, 32f
 	LOG	"\004  The King's gaze pins you in place.\001"
 	b	31f
-32:	mov	x0, 2
+32:	LDQ	x8, p_class
+	cmp	x8, 2                           // rogue: 75%, everyone else 50%
+	b.ne	33f
+	mov	x0, 4
+	bl	_rnd
+	cbnz	x0, 34f
+	b	31f
+33:	mov	x0, 2
 	bl	_rnd
 	cbnz	x0, 31f
+34:	STQ	xzr, p_poison
 	mov	x0, 1
 	LEAVE
-31:	bl	_foe_hit
-	mov	x3, x0
-	LA	x2, m_name
-	LOG	"\004  ← You stumble. %s clips you for %ld.\001"
+31:	STR	x0, "\004  ← You stumble. %s clips you for %ld.\001"
+	bl	_foe_turn
 	b	1b
+
 40:	LOG	"\003  That's not a thing you can do.\001"
 	b	1b
-90:	LDQ	x8, p_hp
+
+90:	STQ	xzr, p_poison
+	LDQ	x8, p_hp
 	cmp	x8, 0
 	mov	x0, 0
 	mov	x1, 2
@@ -1079,7 +1245,7 @@ _merchant:
 	LA	x1, msgbuf
 	SAY	"%s\n"
 2:	bl	_render_bottom
-	SAY	"\n  \023[1]\001 Potion           \0075g\001\n  \023[2]\001 Sharpen weapon  \00712g\001  (+1 ATK)\n  \023[3]\001 Reinforce armor \00712g\001  (+1 ARM)\n  \023[4]\001 Mystery box     \00710g\001\n  \023[5]\001 Leave\n"
+	SAY	"\n  \023[1]\001 Potion           \0075g\001\n  \023[2]\001 Sharpen weapon  \00712g\001  (+1 ATK)\n  \023[3]\001 Reinforce armor \00712g\001  (+1 ARM)\n  \023[4]\001 Mystery box     \00710g\001\n  \023[5]\001 Coffee beans     \0078g\001  (x2)\n  \023[6]\001 Leave\n"
 	STR	x0, "  \003>\001 "
 	mov	x1, 0
 	bl	_readline
@@ -1142,6 +1308,14 @@ _merchant:
 	MSG	"\005  Max HP +2.\001"
 	b	1b
 14:	cmp	w8, '5'
+	b.ne	15f
+	cmp	x22, 8
+	b.lt	40f
+	ADDQ	p_gold, -8
+	ADDQ	p_beans, 2
+	MSG	"\024  Two beans, wrapped in a receipt.\001"
+	b	1b
+15:	cmp	w8, '6'
 	b.eq	50f
 40:	MSG	"\003  Not enough gold, or not a real choice.\001"
 	b	1b
@@ -1182,6 +1356,8 @@ _handle_room:
 	b.eq	85f
 	cmp	w21, 8
 	b.eq	90f
+	cmp	w21, 9
+	b.eq	100f
 
 	LA	x0, art_empty                   // empty
 	LA	x1, lbl_empty
@@ -1247,9 +1423,15 @@ _handle_room:
 	mov	x2, x22
 	MSG	"\005  ATK +%ld.\001"
 	b	45f
-43:	ADDQ	p_arm, x22
+43:	cmp	x8, 3
+	b.ne	44f
+	ADDQ	p_arm, x22
 	mov	x2, x22
 	MSG	"\005  Armor +%ld.\001"
+	b	45f
+44:	ADDQ	p_beans, x22
+	mov	x2, x22
+	MSG	"\024  +%ld coffee beans.\001"
 45:	strb	wzr, [x20, x19]
 	LA	x0, art_treasure
 	LA	x1, lbl_treasure
@@ -1395,7 +1577,7 @@ _handle_room:
 87:	mov	x0, 0
 	LEAVE
 
-90:	mov	x0, 5                           // riddle
+90:	mov	x0, 10                          // riddle
 	bl	_rnd
 	LA	x8, riddles
 	mov	x9, 24
@@ -1451,7 +1633,168 @@ _handle_room:
 	mov	x0, 0
 	LEAVE
 
+100:	strb	wzr, [x20, x19]                 // dice goblin
+	mov	x21, 0
+101:	LA	x0, art_dice
+	LA	x1, lbl_dice
+	bl	_render_top
+	SAY	"\006  A goblin in a green visor rattles two dice in a cup.\001\n\003  'Two dice each. Beat my roll and I double your bet.'\001\n\n"
+	cbz	x21, 102f
+	LA	x1, msgbuf
+	SAY	"%s\n"
+102:	bl	_render_bottom
+	LDQ	x8, p_gold
+	cmp	x8, 5
+	b.ge	103f
+	SAY	"\n\003  You're broke. The goblin loses interest.\001\n"
+	mov	x0, 0
+	LEAVE
+103:	SAY	"\n  \023[1]\001 Bet  \0075g\001\n  \023[2]\001 Bet \00710g\001\n  \023[3]\001 Bet \00720g\001\n  \023[4]\001 Walk away\n"
+	STR	x0, "  \003>\001 "
+	mov	x1, 0
+	bl	_readline
+	mov	x21, 1
+	ldrb	w8, [x0]
+	cbz	w8, 109f
+	ldrb	w9, [x0, 1]
+	cbnz	w9, 104f
+	mov	x22, 5
+	cmp	w8, '1'
+	b.eq	105f
+	mov	x22, 10
+	cmp	w8, '2'
+	b.eq	105f
+	mov	x22, 20
+	cmp	w8, '3'
+	b.eq	105f
+	cmp	w8, '4'
+	b.eq	109f
+104:	MSG	"\003  The goblin waits for a real bet.\001"
+	b	101b
+105:	LDQ	x8, p_gold
+	cmp	x8, x22
+	b.ge	106f
+	MSG	"\003  You can't cover that.\001"
+	b	101b
+106:	mov	x0, 6                           // 2d6 each
+	bl	_rnd
+	mov	x23, x0
+	mov	x0, 6
+	bl	_rnd
+	add	x23, x23, x0
+	add	x23, x23, 2
+	mov	x0, 6
+	bl	_rnd
+	mov	x24, x0
+	mov	x0, 6
+	bl	_rnd
+	add	x24, x24, x0
+	add	x24, x24, 2
+	mov	x2, x23
+	mov	x3, x24
+	mov	x4, x22
+	cmp	x23, x24
+	b.gt	107f
+	b.lt	108f
+	MSG	"\003  You roll %ld, it rolls %ld. A push.\001"
+	b	101b
+107:	ADDQ	p_gold, x22
+	MSG	"\005  You roll %ld, it rolls %ld. +%ld gold!\001"
+	b	101b
+108:	LDQ	x8, p_gold
+	sub	x8, x8, x22
+	STQ	x8, p_gold
+	MSG	"\004  You roll %ld, it rolls %ld. -%ld gold.\001"
+	b	101b
+109:	LA	x0, art_empty
+	LA	x1, lbl_empty
+	bl	_render_top
+	SAY	"\003  The goblin tips its visor. 'Come back richer.'\001\n"
+	bl	_render_bottom
+	mov	x0, 0
+	LEAVE
+
 // ---------- main loop ----------
+
+// best_path -> x0 "$HOME/.crypt-best", or 0 without HOME
+_best_path:
+	ENTER
+	STR	x0, "HOME"
+	bl	_getenv
+	cbz	x0, 1f
+	mov	x2, x0
+	LA	x0, pathbuf
+	STR	x1, "%s/.crypt-best"
+	bl	_sfmt
+	LA	x0, pathbuf
+	LEAVE
+1:	mov	x0, 0
+	LEAVE
+
+_best_load:
+	ENTER
+	bl	_best_path
+	cbz	x0, 1f
+	STR	x1, "r"
+	bl	_fopen
+	cbz	x0, 1f
+	mov	x19, x0
+	LA	x0, tmpc
+	mov	w1, 64
+	mov	x2, x19
+	bl	_fgets
+	mov	x20, x0
+	mov	x0, x19
+	bl	_fclose
+	cbz	x20, 1f
+	LA	x0, tmpc
+	mov	x1, 0
+	mov	w2, 10
+	bl	_strtol
+	STQ	x0, best
+1:	LEAVE
+
+// finish(x0 won?): score = 100/floor cleared + 25/level + gold (+500 for the King)
+_finish:
+	ENTER
+	mov	x19, x0
+	LDQ	x8, depth
+	sub	x8, x8, 1
+	mov	x9, 100
+	mul	x20, x8, x9
+	LDQ	x8, p_lvl
+	mov	x9, 25
+	madd	x20, x8, x9, x20
+	LDQ	x8, p_gold
+	add	x20, x20, x8
+	mov	x9, 500
+	cmp	x19, 0
+	csel	x9, x9, xzr, ne
+	add	x20, x20, x9
+	mov	x1, x20
+	SAY	"\002\023  Score: %ld\001"
+	LDQ	x8, best
+	cmp	x20, x8
+	b.le	2f
+	SAY	"   \002\007NEW BEST!\001"
+	STQ	x20, best
+	bl	_best_path
+	cbz	x0, 2f
+	STR	x1, "w"
+	bl	_fopen
+	cbz	x0, 2f
+	mov	x21, x0
+	LA	x0, tmpc
+	STR	x1, "%ld\n"
+	mov	x2, x20
+	bl	_sfmt
+	LA	x0, tmpc
+	mov	x1, x21
+	bl	_fputs
+	mov	x0, x21
+	bl	_fclose
+2:	SAY	"\n\n"
+	LEAVE
 
 // gen_dungeon: a fresh 5x5 floor, index = y*5 + x
 _gen_dungeon:
@@ -1487,6 +1830,11 @@ _play:
 	LA	x0, art_banner
 	bl	_show_art
 	SAY	"\n"
+	bl	_best_load
+	LDQ	x1, best
+	cbz	x1, 49f
+	SAY	"\003  Best score: %ld\001\n\n"
+49:
 	STR	x0, "\020  Adventurer's name: \001"
 	mov	x1, 0
 	bl	_readline
@@ -1497,6 +1845,19 @@ _play:
 	LA	x0, p_name
 	mov	x2, 256
 	bl	_strlcpy
+	SAY	"\n  \023Choose your calling:\001\n  \023[1]\001 Knight    \003+1 ARM, +4 max HP\001\n  \023[2]\001 Barista   \003+2 potions, and they heal 15\001\n  \023[3]\001 Rogue     \003+1 ATK, 15%% crits, flees 75%% of the time\001\n"
+50:	STR	x0, "  \003[1-3] >\001 "
+	mov	x1, 0
+	bl	_readline
+	ldrb	w8, [x0]
+	mov	x9, 0
+	cbz	w8, 51f
+	ldrb	w10, [x0, 1]
+	cbnz	w10, 50b
+	sub	w9, w8, '1'
+	cmp	w9, 2
+	b.hi	50b
+51:	STQ	x9, p_class
 
 	mov	x8, 20
 	STQ	x8, p_hp
@@ -1517,13 +1878,30 @@ _play:
 	STQ	x8, depth
 	STQ	xzr, p_xp
 	STQ	xzr, boss
-	bl	_gen_dungeon
+	STQ	x8, p_beans
+	LDQ	x8, p_class
+	cmp	x8, 0
+	b.ne	52f
+	mov	x8, 1                           // knight
+	STQ	x8, p_arm
+	ADDQ	p_max, 4
+	ADDQ	p_hp, 4
+	b	54f
+52:	cmp	x8, 1
+	b.ne	53f
+	ADDQ	p_pot, 2                        // barista
+	b	54f
+53:	ADDQ	p_atk, 1                        // rogue
+54:	bl	_gen_dungeon
 
 	LA	x0, art_start
 	LA	x1, lbl_start
 	bl	_render_top
 	LA	x1, p_name
-	SAY	"\023  Welcome, %s.\001\n\003  The King hoards every bean north of the river.\001\n\003  Three floors down, he waits. Find the > on each floor.\001\n"
+	LDQ	x8, p_class
+	LA	x9, class_names
+	ldr	x2, [x9, x8, lsl 3]
+	SAY	"\023  Welcome, %s the %s.\001\n\003  The King hoards every bean north of the river.\001\n\003  Three floors down, he waits. Find the > on each floor.\001\n"
 	bl	_render_bottom
 
 10:	LDQ	x8, p_hp
@@ -1599,6 +1977,8 @@ _play:
 	STR	x0, "\003  Final: floor %ld, level %ld, turn %ld, gold %ld.\001\n"
 	bl	_slow
 	bl	_divider
+	mov	x0, 0
+	bl	_finish
 	LEAVE
 
 30:	LDQ	x8, depth
@@ -1666,6 +2046,8 @@ _play:
 	LDQ	x3, p_gold
 	LDQ	x4, p_hp
 	SAY	"\002\005  ★ VICTORY in %ld turns at level %ld, with %ld gold and %ld HP.\001\n\n"
+	mov	x0, 1
+	bl	_finish
 99:	LEAVE
 
 	.globl _main
@@ -1723,6 +2105,12 @@ depth:		.quad 0
 boss:		.quad 0
 boss_turns:	.quad 0
 boss_healed:	.quad 0
+m_trait:	.quad 0
+p_class:	.quad 0
+p_beans:	.quad 0
+p_poison:	.quad 0
+c_buff:		.quad 0
+best:		.quad 0
 
 .zerofill __DATA,__bss,p_name,256,3
 .zerofill __DATA,__bss,m_name,256,3
@@ -1732,6 +2120,7 @@ boss_healed:	.quad 0
 .zerofill __DATA,__bss,tmpa,256,3
 .zerofill __DATA,__bss,tmpb,256,3
 .zerofill __DATA,__bss,tmpc,256,3
+.zerofill __DATA,__bss,pathbuf,256,3
 .zerofill __DATA,__bss,logbuf,1024,3
 .zerofill __DATA,__bss,rooms,32,3
 .zerofill __DATA,__bss,visited,32,3
@@ -1893,6 +2282,34 @@ art_king:	.ascii "\007"
 	.asciz "\001"
 lbl_campfire:	.asciz "\002\006  ♨  CAMPFIRE\001\n"
 lbl_riddle:	.asciz "\002\020  ?  RIDDLE\001\n"
+art_french_press:	.ascii "\021"
+	.ascii "             _____\n"
+	.ascii "            |=====|o      *plunge*\n"
+	.ascii "            |:::::|\n"
+	.ascii "            |:::::|\n"
+	.ascii "            |_____|\n"
+	.asciz "\001"
+art_weevils:	.ascii "\024"
+	.ascii "          .  ,  .  ,  .\n"
+	.ascii "         ,  °o°  °o°  ,     *skitter*\n"
+	.ascii "          .  °o°  °o°  .\n"
+	.ascii "         '  ,  '  ,  '\n"
+	.asciz "\001"
+art_lich:	.ascii "\023"
+	.ascii "             .-'''-.\n"
+	.ascii "            /  ~ ~  \\      *froth*\n"
+	.ascii "           |  (o o)  |\n"
+	.ascii "            \\   ~   /\n"
+	.ascii "            /`-----'\\\n"
+	.asciz "\001"
+art_dice:	.ascii "\023"
+	.ascii "           .-------.    .-------.\n"
+	.ascii "           | o   o |    | o     |\n"
+	.ascii "           |   o   |    |   o   |\n"
+	.ascii "           | o   o |    |     o |\n"
+	.ascii "           '-------'    '-------'\n"
+	.asciz "\001"
+lbl_dice:	.asciz "\002\006  ⚅  DICE GOBLIN\001\n"
 esc_R:	.asciz "\033[0m"
 esc_B:	.asciz "\033[1m"
 esc_DIM:	.asciz "\033[2m"
@@ -1932,14 +2349,17 @@ colortab:		// control byte -> ANSI sequence (0 = not a colour token)
 	.quad esc_DRK
 	.quad esc_WHT
 	.quad esc_BRN
-monsters:		// article, rest, hp, atk, gold, flavor, art
-	.quad Ls0, Ls1, 8, 2, 6, Ls2, art_sleepy_goblin
-	.quad Ls0, Ls3, 12, 3, 9, Ls4, art_skeleton
-	.quad Ls0, Ls5, 6, 2, 4, Ls6, art_giant_rat
-	.quad Ls0, Ls7, 16, 4, 18, Ls8, art_cursed_barista
-	.quad Ls0, Ls9, 10, 2, 7, Ls10, art_slime
-	.quad Ls0, Ls11, 9, 4, 11, Ls12, art_shadow_imp
-	.quad Ls13, Ls14, 22, 5, 25, Ls15, art_espresso_golem
+monsters:		// article, rest, hp, atk, gold, flavor, art, trait
+	.quad Ls0, Ls1, 8, 2, 6, Ls2, art_sleepy_goblin, 0
+	.quad Ls0, Ls3, 12, 3, 9, Ls4, art_skeleton, 3
+	.quad Ls0, Ls5, 6, 2, 4, Ls6, art_giant_rat, 1
+	.quad Ls0, Ls7, 16, 4, 18, Ls8, art_cursed_barista, 4
+	.quad Ls0, Ls9, 10, 2, 7, Ls10, art_slime, 5
+	.quad Ls0, Ls11, 9, 4, 11, Ls12, art_shadow_imp, 2
+	.quad Ls13, Ls14, 22, 5, 25, Ls15, art_espresso_golem, 3
+	.quad Ls0, Lm0, 14, 3, 12, Lm1, art_french_press, 3
+	.quad Ls0, Lm2, 7, 3, 8, Lm3, art_weevils, 2
+	.quad Ls0, Lm4, 18, 4, 20, Lm5, art_lich, 1
 prefixes:		// name, hp, atk, gold
 	.quad Ls16, 2, 2, 3
 	.quad Ls17, -3, 0, -2
@@ -2044,8 +2464,17 @@ riddles:		// question, answer, alternative answer
 	.quad Lr2, Lr2a, Lr2a
 	.quad Lr3, Lr3a, Lr3a
 	.quad Lr4, Lr4a, Lr4b
-room_cum:		// cumulative weights: empty monster treasure trap shrine merchant fountain campfire riddle
-	.byte 8, 38, 54, 65, 72, 79, 90, 95, 100
+	.quad Lr5, Lr5a, Lr5a
+	.quad Lr6, Lr6a, Lr6b
+	.quad Lr7, Lr7a, Lr7a
+	.quad Lr8, Lr8a, Lr8a
+	.quad Lr9, Lr9a, Lr9a
+trait_names:		// indexed by monster trait
+	.quad 0, Lt1, Lt2, Lt3, Lt4, Lt5
+class_names:
+	.quad Lc0, Lc1, Lc2
+room_cum:		// cumulative weights: empty monster treasure trap shrine merchant fountain campfire riddle dice
+	.byte 7, 37, 52, 62, 69, 76, 86, 91, 96, 100
 
 	.section __TEXT,__cstring,cstring_literals
 Lr0:	.asciz "The more you take, the more you leave behind. What are they?"
@@ -2061,6 +2490,31 @@ Lr3a:	.asciz "towel"
 Lr4:	.asciz "I have keys but open no locks. What am I?"
 Lr4a:	.asciz "piano"
 Lr4b:	.asciz "keyboard"
+Lr5:	.asciz "What has to be broken before you can use it?"
+Lr5a:	.asciz "egg"
+Lr6:	.asciz "I have a spout, a handle and a temper. What am I?"
+Lr6a:	.asciz "kettle"
+Lr6b:	.asciz "teapot"
+Lr7:	.asciz "What can you catch but not throw?"
+Lr7a:	.asciz "cold"
+Lr8:	.asciz "The more of me there is, the less you see. What am I?"
+Lr8a:	.asciz "dark"
+Lr9:	.asciz "What has hands but cannot clap?"
+Lr9a:	.asciz "clock"
+Lt1:	.asciz "venomous"
+Lt2:	.asciz "evasive"
+Lt3:	.asciz "armored"
+Lt4:	.asciz "light-fingered"
+Lt5:	.asciz "regenerating"
+Lc0:	.asciz "Knight"
+Lc1:	.asciz "Barista"
+Lc2:	.asciz "Rogue"
+Lm0:	.asciz "haunted french press"
+Lm1:	.asciz "It plunges menacingly."
+Lm2:	.asciz "bean weevil swarm"
+Lm3:	.asciz "A thousand tiny mandibles. One opinion."
+Lm4:	.asciz "latte-art lich"
+Lm5:	.asciz "Its foam is shaped like your face."
 Ls0:	.asciz "a"
 Ls1:	.asciz "sleepy goblin"
 Ls2:	.asciz "It's clutching a tiny mug. Steam rises from it."
