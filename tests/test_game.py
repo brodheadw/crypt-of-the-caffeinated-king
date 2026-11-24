@@ -17,7 +17,7 @@ class TerminalRuns(unittest.TestCase):
         build = tempfile.TemporaryDirectory()
         cls.addClassCleanup(build.cleanup)
         cls.binary = Path(build.name) / "crypt"
-        subprocess.run(["clang", "-o", cls.binary, SOURCE], check=True)
+        subprocess.run(["clang", "-o", cls.binary, SOURCE.name], cwd=SOURCE.parent, check=True)
 
     def launch(self, args, lines=()):
         with tempfile.TemporaryDirectory() as home:

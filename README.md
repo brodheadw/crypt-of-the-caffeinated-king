@@ -2,7 +2,7 @@
 
 The King has hoarded every bean north of the river. His night shift is still down there. Pick a calling, get the workers out if you can, and take the last bean off his kitchen counter.
 
-A terminal dungeon crawler for Apple Silicon Macs. The entire game lives in one AArch64 assembly file and links against the system C library.
+A terminal dungeon crawler for Apple Silicon Macs. The game is written in AArch64 assembly and links against the system C library. The dungeon logic lives in `crypt.s` and the terminal artwork in `art.s`.
 
 ```sh
 clang -o crypt crypt.s
