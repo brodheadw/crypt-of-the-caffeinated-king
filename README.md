@@ -1,86 +1,62 @@
 # Crypt of the Caffeinated King
 
-A tiny terminal dungeon crawler, written entirely in AArch64 assembly for macOS on Apple Silicon. No dependencies beyond the system C library.
+The King has hoarded every bean north of the river. His night shift is still down there. Pick a calling, get the workers out if you can, and take the last bean off his kitchen counter.
 
-```
+A terminal dungeon crawler for Apple Silicon Macs. The game is written in AArch64 assembly and links against the system C library. The dungeon logic lives in `crypt.s` and the terminal artwork in `art.s`.
+
+```sh
 clang -o crypt crypt.s
 ./crypt
 ```
 
-## What it is
+For a repeatable first run, try `./crypt --seed 18` as the Knight. Every run prints its seed. On the same version, a seed fixes each floor's layout even if you take a different route. Repeating the same choices also reproduces the fights and loot.
 
-You descend three randomly generated 5×5 floors, each with its stairs in the far corner. Along the way: monsters, treasure, traps, fountains, shrines, campfires, a riddling owl, and a hooded merchant. At the bottom, on a throne of burlap sacks, sits the Caffeinated King. He has hoarded every bean north of the river. Take the last one.
+![A native terminal run showing the dungeon map and a guard followed by a riposte](docs/night-shift.gif)
 
-## Features
+## The descent
 
-- Pick a calling: Knight (+1 ARM, +4 HP), Barista (more and stronger
-  potions) or Rogue (+1 ATK, crits, better at running away)
-- ANSI-colored terminal UI with rounded box borders
-- HP bars that shift green → yellow → red
-- ASCII art for every room type and every monster, kept in `art.s`
-- Each move clears the screen — each room is its own scene
-- Three floors; monsters and traps hit harder the deeper you go
-- A boss fight: the King throws scalding espresso every third turn, heals
-  once when hurt, and won't let you run
-- XP and levels: every kill earns XP; each level gives +4 max HP and +1 ATK
-- Combat with attack / heavy attack (double damage or a miss) / potion / run,
-  plus a rolling action log
-- Shrines, fountains, traps, treasure, a merchant with a mystery box
-- Campfires: rest to full HP, if nothing finds you in your sleep
-- An owl statue that asks riddles: answer right for loot, wrong and it bites
-- Eleven base monsters (cursed barista, espresso golem, latte-art lich, the
-  regional manager, etc.) modulated by
-  procedural prefixes and suffixes — you'll fight things like
-  *an artisanal moss-covered skeleton of the second pour*
-- Procedurally generated weapons and armor (`[material] [type] of [theme]`),
-  with stats driven by the name itself
-- Monster traits: venomous (poisons you), evasive (dodges), armored (shrugs
-  off damage), light-fingered (steals gold; kill it to get it back),
-  regenerating, and managerial (the regional manager writes you up for -1 ATK
-  per write-up, and you can't run from him)
-- Coffee beans: chew one mid-fight for +3 ATK until the fight ends. Found as
-  loot or bought from the merchant
-- A dice goblin who'll roll 2d6 against you for 5, 10 or 20 gold
-- A score at the end of every run (floors cleared, level, gold, +500 for the
-  King); your best is kept in `~/.crypt-best`
+| Floor | What to look for |
+| --- | --- |
+| **I · Loading Dock** | The dock has the most caches and two merchants. Somewhere in the side aisles, a porter is pinned under her cart. |
+| **II · Boilerworks** | Trapped doorways are most common here. A fitter is knocking from the wrong side of a boiler door. Read the gauges before opening a valve. |
+| **III · King's Pantry** | The King's guard is thickest here. Find the tasting hatch, or head for the throne. |
 
-## Procedural generation
+The map remembers what you could see from each doorway. A quiet room can still hide a trap. The crew's signal (`!`) and the exit (`>`) carry across the whole floor. You can come back to a worker, a shop, a shrine you passed up, or an unused campfire. A fountain waits if you reach it at full health. At the stairs, press Enter to descend or `b` to turn back. The workers you bring home change the ending.
 
-Two systems generate variety on every run:
+## Fights
 
-**Monsters.** Each base monster (`crypt.s: monsters`) is occasionally wrapped
-with a prefix from `prefixes` (e.g. *blazing*, *tiny*, *ancient*, *decaf*)
-and/or a suffix from `suffixes` (*of the depths*, *the over-extracted*). Each
-modifier carries `hp, atk, gold` deltas so the name and the stats move
-together. Articles are corrected for vowel sounds — *an ancient slime*, not
-*a ancient slime*.
+Read the next strike above the combat log. The number already includes your armor. Guard against a quick strike and half gets through, rounded up. Guard a wind-up and the blow misses entirely. Follow immediately with a heavy attack for a guaranteed double-damage riposte. Existing poison still ticks while you guard.
 
-**Loot.** `_procgen_treasure` rolls a category, then composes a name:
-- weapons: `[material] [type] [optional theme]` — e.g. *an obsidian cleaver of
-  the brewmaster* — with the material driving the ATK bonus and the theme
-  adding +1
-- armor: same, but `armor_types` and ARM bonus
-- potions: `[adjective] potion` — flavor only; healing is fixed
-- a 15% chance to pull a hand-crafted special item from `specials`
-  (the King's chipped mug, the brewmaster's apron, etc.) instead
+The King raises his cup with both hands every third turn. He also keeps a ristretto in reserve for when he falls to half health.
 
-To tune: edit the tables in the data section at the bottom of `crypt.s`. Each
-table's length is hard-coded where it is rolled (`mov x0, 11` before
-`bl _rnd` for the 11 prefixes, and so on), so update that count when you add a
-row.
+| Calling | Starting advantage |
+| --- | --- |
+| Knight | +4 max HP and +1 armor |
+| Barista | Two extra potions. Each heals 15 HP instead of 10. |
+| Rogue | +1 attack, a 15% critical chance on basic attacks, and a 75% chance to flee ordinary foes |
+
+Eleven base monsters can pick up prefixes and suffixes that change their stats. An armored foe absorbs damage. A thief keeps stolen gold until you kill it. The regional manager can dock your attack for the rest of the fight, and insists you stay for the whole meeting.
+
+Kills earn gold and XP. Each level adds 4 max HP and 1 attack. Merchants sell gear upgrades, beans, potions, and mystery boxes. Keep an eye out for the riddling owl and the dice goblin.
 
 ## Controls
 
+Type a key and press Enter.
+
+| Where | Keys |
+| --- | --- |
+| Exploring | `w` north, `a` west, `s` south, `d` east. Press `p` to drink a potion, `i` for the map and shift notes, or `q` to leave. |
+| Fighting | `a` or Enter attacks. `h` makes a heavy attack (50% chance to hit before a foe's evasive trait) or takes an open riposte. `g` guards. |
+| Fighting, supplies and escape | `b` chews a bean for +3 attack for the rest of the fight. `p` drinks a potion. Both spend the turn. `r` attempts to flee. |
+
+Defeat and victory each tally a score from floor progress, level and gold, with another 500 points for beating the King. Your best score is saved in `~/.crypt-best`.
+
+## Building and testing
+
+Use Terminal.app or another UTF-8 terminal on an Apple Silicon Mac with the Xcode command line tools (`xcode-select --install`). The game uses ANSI color in an interactive terminal. Piped input and output work for scripted runs.
+
+```sh
+python3 tests/test_game.py -v
 ```
-w / a / s / d   move
-i               info
-q               quit
-```
 
-In combat: `a` attack, `h` heavy attack, `b` chew a bean, `p` drink potion, `r` run.
-
-## Requirements
-
-macOS on Apple Silicon (arm64) with the Xcode command line tools
-(`xcode-select --install`). A terminal that supports ANSI colors and Unicode
-box-drawing characters (Terminal.app, iTerm2, and so on).
+The tests compile the game in a temporary directory and drive it through its normal prompts with isolated scores. To tune the campaign, look for `floor_decks`, `monsters`, `prefixes`, `suffixes` and `specials` in `crypt.s`. Each floor deck has 22 ordinary rooms plus a separately placed crew landmark. Keep the roll counts in sync when adding entries to the monster and loot tables.

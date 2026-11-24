@@ -181,6 +181,11 @@ _slow:
 	mov	x1, 1024
 	bl	_vsnprintf
 	LA	x19, slowbuf
+	LDQ	x8, use_color
+	cbnz	x8, 1f
+	mov	x0, x19                         // plain transcripts print at full speed
+	bl	_emit
+	b	3f
 1:	ldrb	w20, [x19], 1
 	cbz	w20, 3f
 	and	w8, w20, 0xC0
@@ -220,10 +225,7 @@ _clear:
 	SAY	"\033[H\033[2J\033[3J"
 	bl	_flush
 	LEAVE
-1:	bl	_flush
-	STR	x0, "clear"
-	bl	_system
-	LEAVE
+1:	LEAVE
 
 _divider:
 	ENTER
@@ -341,14 +343,41 @@ _rain_exit:
 
 // ---------- random ----------
 
-// rnd(x0 n) -> uniform in [0, n)
+// SplitMix64 with rejection sampling. Keep fixed-width operations so a seed
+// can be passed between players and produce the same run.
 _rnd:
-	stp	x29, x30, [sp, -16]!
-	mov	x29, sp
-	bl	_arc4random_uniform
-	mov	w0, w0
-	ldp	x29, x30, [sp], 16
+	neg	w8, w0
+	udiv	w9, w8, w0
+	msub	w8, w9, w0, w8                  // 2^32 mod n
+	LDQ	x10, rng_step
+	LDQ	x11, rng_mix1
+	LDQ	x12, rng_mix2
+	LDQ	x13, rng_state
+1:	add	x13, x13, x10
+	eor	x9, x13, x13, lsr 30
+	mul	x9, x9, x11
+	eor	x9, x9, x9, lsr 27
+	mul	x9, x9, x12
+	eor	x9, x9, x9, lsr 31
+	cmp	w9, w8
+	b.lo	1b
+	STQ	x13, rng_state
+	udiv	w10, w9, w0
+	msub	w0, w10, w0, w9
 	ret
+
+// The floor plan depends only on the run seed and floor number. Throwing
+// extra dice on the dock cannot rearrange the boilerworks downstairs.
+_deal_floor:
+	ENTER
+	LDQ	x19, rng_state
+	LDQ	x8, run_seed
+	LDQ	x9, depth
+	orr	x8, x8, x9, lsl 32
+	STQ	x8, rng_state
+	bl	_gen_dungeon
+	STQ	x19, rng_state
+	LEAVE
 
 // randint(x0 lo, x1 hi) -> uniform in [lo, hi]
 _randint:
@@ -384,6 +413,16 @@ _heal:
 	STQ	x3, p_hp
 	sub	x0, x3, x1
 	ret
+
+// Caller has checked stock. Return the amount actually healed.
+_drink_potion:
+	ADDQ	p_pot, -1
+	LDQ	x8, p_class
+	cmp	x8, 1
+	mov	x0, 10
+	mov	x9, 15
+	csel	x0, x9, x0, eq
+	b	_heal
 
 // ---------- procgen ----------
 
@@ -619,31 +658,64 @@ _show_art:
 	SAY	"%s"
 	LEAVE
 
-// map_cell(x0 x, x1 y)
-_map_cell:
-	ENTER
+// Draw the local view at the landing and in quiet rooms.
+_floor_scene:
+	LDQ	x8, depth
+	sub	x8, x8, 1
+	LA	x9, floor_scenes
+	add	x9, x9, x8, lsl 4
+	ldp	x0, x1, [x9]
+	b	_render_top
+
+// map_glyph(x0 x, x1 y) -> coloured glyph. A visited doorway scouts its
+// four neighbours. A quiet doorway can still be trapped.
+_map_glyph:
 	LDQ	x8, p_x
 	LDQ	x9, p_y
 	cmp	x0, x8
 	b.ne	1f
 	cmp	x1, x9
 	b.ne	1f
-	SAY	"\002\005@\001"
-	LEAVE
+	STR	x0, "\002\005@\001"
+	ret
 1:	mov	x8, 5
-	madd	x19, x1, x8, x0
-	LA	x8, visited
-	ldrb	w20, [x8, x19]
-	cmp	x19, 24
+	madd	x9, x1, x8, x0
+	cmp	x9, 24
 	b.ne	2f
-	cbz	w20, 3f
-	SAY	"\002\007>\001"
-	LEAVE
-2:	cbz	w20, 3f
-	SAY	"\021·\001"
-	LEAVE
-3:	SAY	"\022?\001"
-	LEAVE
+	STR	x0, "\002\007>\001"
+	ret
+2:	LA	x8, rooms
+	ldrb	w10, [x8, x9]
+	cmp	w10, 10                         // the crew's signal travels across the floor
+	b.ne	3f
+	STR	x0, "\002\020!\001"
+	ret
+3:	LA	x8, visited
+	add	x8, x8, x9
+	ldrb	w11, [x8]
+	cbz	w11, 4f
+	cbnz	w10, 9f
+	STR	x0, "\021·\001"
+	ret
+4:	cbz	x0, 5f                          // west
+	ldurb	w11, [x8, -1]
+	cbnz	w11, 9f
+5:	cmp	x0, 4                           // east
+	b.eq	6f
+	ldrb	w11, [x8, 1]
+	cbnz	w11, 9f
+6:	cbz	x1, 7f                          // south
+	ldurb	w11, [x8, -5]
+	cbnz	w11, 9f
+7:	cmp	x1, 4                           // north
+	b.eq	8f
+	ldrb	w11, [x8, 5]
+	cbnz	w11, 9f
+8:	STR	x0, "\022?\001"
+	ret
+9:	LA	x8, room_glyphs
+	ldr	x0, [x8, x10, lsl 3]
+	ret
 
 _map:
 	ENTER
@@ -658,12 +730,15 @@ _map:
 2:	SAY	" "
 	mov	x0, x19
 	mov	x1, x20
-	bl	_map_cell
+	bl	_map_glyph
+	bl	_outf
 	SAY	" "
 	add	x19, x19, 1
 	cmp	x19, 5
 	b.lo	2b
-	SAY	"\022│\001\n"
+	LA	x8, map_key
+	ldr	x1, [x8, x20, lsl 3]
+	SAY	"\022│\001  %s\n"
 	subs	x20, x20, 1
 	b.ge	1b
 	SAY	"\022╰"
@@ -671,7 +746,6 @@ _map:
 	mov	x1, 16
 	bl	_rep
 	SAY	"╯\001\n"
-	SAY	"   \002\005@\001 you   \021·\001 visited   \022?\001 unknown   \002\007>\001 exit\n"
 	LEAVE
 
 _status:
@@ -736,7 +810,12 @@ _status:
 	mov	x8, 20
 	mul	x3, x1, x8
 	LDQ	x4, depth
-	STR	x0, " \023Lv\001  %-3ld \023XP\001 %ld/%ld   \020Floor\001 %ld/3"
+	LDQ	x8, crew_mask
+	and	x5, x8, 1
+	ubfx	x9, x8, 1, 1
+	add	x5, x5, x9
+	add	x5, x5, x8, lsr 2
+	STR	x0, " \023Lv\001  %-3ld \023XP\001 %ld/%ld   \020Floor\001 %ld/3   \020Crew\001 %ld/3"
 	bl	_pline
 	SAY	"\022╰"
 	STR	x0, "─"
@@ -873,12 +952,15 @@ _render_combat:
 	LDQ	x1, p_hp
 	LDQ	x2, p_max
 	SAY	"  \023%ld/%ld\001"
+	LDQ	x1, p_pot
+	LDQ	x2, p_beans
+	SAY	"   \003Potions %ld · Beans %ld\001"
 	LDQ	x1, c_buff
 	cbz	x1, 8f
 	SAY	"  \024%+ld ATK\001"
-8:	LDQ	x8, p_poison
-	cbz	x8, 9f
-	SAY	"  \004poisoned\001"
+8:	LDQ	x1, p_poison
+	cbz	x1, 9f
+	SAY	"  \004Venom -2/turn (%ld)\001"
 9:	SAY	"\n"
 	SAY	"  \004Foe\001    "
 	LDQ	x0, foe_hp
@@ -888,6 +970,31 @@ _render_combat:
 	LDQ	x1, foe_hp
 	LDQ	x2, m_hp
 	SAY	"  \023%ld/%ld\001\n"
+	LDQ	x1, c_incoming
+	LDQ	x8, c_windup
+	cbnz	x8, L_render_windup
+	add	x2, x1, 1
+	lsr	x2, x2, 1
+	SAY	"\020  Quick strike\001   %ld damage (%ld through guard).\n"
+	b	L_render_opening
+L_render_windup:
+	LDQ	x8, boss
+	cbz	x8, L_render_foe_tell
+	SAY	"\007  Espresso!\001      The King lifts the cup with both hands.\n"
+	b	L_render_parry_hint
+L_render_foe_tell:
+	LDQ	x8, m_trait
+	LA	x9, windup_tells
+	ldr	x1, [x9, x8, lsl 3]
+	SAY	"\007  Wind-up!\001      %s\n"
+L_render_parry_hint:
+	LDQ	x1, c_incoming
+	SAY	"                 %ld damage. [g] parries and opens a riposte.\n"
+L_render_opening:
+	LDQ	x8, c_opening
+	cbz	x8, L_render_history
+	SAY	"\005  Opening!\001       [h] riposte now. Double damage, guaranteed hit.\n"
+L_render_history:
 	SAY	"\n"
 	LA	x19, logbuf
 	LDQ	x20, log_n
@@ -902,26 +1009,47 @@ _render_combat:
 	SAY	"\n"
 6:	LEAVE
 
-// foe_hit -> damage the current monster deals to the player
-_foe_hit:
+// Roll once per enemy action. Invalid input leaves the displayed hit intact.
+_prepare_intent:
 	ENTER
-	LDQ	x8, m_atk
-	sub	x0, x8, 1
-	add	x1, x8, 1
-	LDQ	x9, boss
-	cbz	x9, 1f
-	ADDQ	boss_turns, 1                   // every third King turn: the espresso
-	LDQ	x9, boss_turns
-	mov	x10, 3
-	udiv	x11, x9, x10
-	msub	x11, x11, x10, x9
-	cbnz	x11, 1f
-	LOG	"\017  ☕ The King hurls a scalding espresso!\001"
-	LDQ	x8, m_atk
-	add	x0, x8, 3
-	add	x1, x8, 5
-1:	bl	_randint
-	bl	_hurt
+	LDQ	x19, m_atk
+	LDQ	x8, c_quick_left
+	cbz	x8, 1f
+	sub	x8, x8, 1
+	STQ	xzr, c_windup
+	b	3f
+1:	mov	x8, 1
+	STQ	x8, c_windup
+	LDQ	x8, boss
+	cbz	x8, 2f
+	add	x19, x19, 4                     // the King's third turn
+	mov	x8, 2
+	b	3f
+2:	add	x19, x19, 2
+	mov	x0, 3
+	bl	_rnd
+	add	x8, x0, 1                       // one to three quick strikes before the next tell
+3:	STQ	x8, c_quick_left
+	sub	x0, x19, 1
+	add	x1, x19, 1
+	bl	_randint
+	LDQ	x8, p_arm
+	sub	x0, x0, x8
+	cmp	x0, 1
+	csinc	x0, x0, xzr, ge
+	STQ	x0, c_incoming                  // HP loss after armor, before guard
+	LEAVE
+
+// Show the final blow on the result screen after its predecessor is cleared.
+_combat_recap:
+	ENTER
+	LDQ	x8, log_n
+	cbz	x8, 1f
+	sub	x8, x8, 1
+	LA	x9, logbuf
+	add	x1, x9, x8, lsl 8
+	SAY	"%s\n"
+1:
 	LEAVE
 
 // boss_check: below half HP the King heals once.
@@ -963,7 +1091,6 @@ _setup_boss:
 	STQ	x8, m_art
 	mov	x8, 1
 	STQ	x8, boss
-	STQ	xzr, boss_turns
 	STQ	xzr, boss_healed
 	STQ	xzr, m_trait
 	LEAVE
@@ -1003,13 +1130,14 @@ _roll_dmg:
 	csinc	x0, x0, xzr, ge
 	LEAVE
 
-// apply_hit(x0 dmg) -> damage dealt after the foe's trait (0 = dodged)
+// apply_hit(x0 dmg, x1 sure hit?) -> damage after the foe's trait (0 = dodged).
 _apply_hit:
 	ENTER
 	mov	x19, x0
 	LDQ	x8, m_trait
 	cmp	x8, 2                           // evasive: 25% dodge
 	b.ne	1f
+	cbnz	x1, 2f                          // a riposte catches even an evasive foe
 	mov	x0, 100
 	bl	_rnd
 	cmp	x0, 25
@@ -1029,10 +1157,11 @@ _apply_hit:
 	mov	x0, x19
 	LEAVE
 
-// foe_turn(x0 hit message fmt): the foe heals/hits/applies its trait, then poison ticks.
+// foe_turn(x0 hit message fmt, or 0 for guard). An opening lasts one action.
 _foe_turn:
 	ENTER
 	mov	x19, x0
+	STQ	xzr, c_opening
 	bl	_boss_check
 	LDQ	x8, m_trait
 	cmp	x8, 5                           // regenerating
@@ -1044,16 +1173,35 @@ _foe_turn:
 	add	x8, x8, 2
 	cmp	x8, x9
 	csel	x8, x8, x9, le
+	LDQ	x10, foe_hp
+	sub	x3, x8, x10
 	STQ	x8, foe_hp
 	LA	x2, m_name
-	LOG	"\005  %s knits back together. +2 HP.\001"
-1:	bl	_foe_hit
-	mov	x20, x0
+	LOG	"\005  %s knits back together. +%ld HP.\001"
+1:	LDQ	x20, c_incoming
+	cbnz	x19, L_land_hit
+	LDQ	x8, c_windup
+	cbz	x8, L_guard_quick
+	mov	x8, 1
+	STQ	x8, c_opening
+	LOG	"\005  Parried clean. Your foe is wide open.\001"
+	b	4f                              // no contact, so no on-hit trait
+L_guard_quick:
+	add	x20, x20, 1
+	lsr	x20, x20, 1
+	STR	x19, "\020  You brace against %s. %ld damage gets through.\001"
+L_land_hit:
+	LDQ	x8, p_hp
+	sub	x8, x8, x20
+	STQ	x8, p_hp
 	bl	_logslot
 	mov	x1, x19
 	LA	x2, m_name
 	mov	x3, x20
 	bl	_sfmt
+	LDQ	x8, p_hp
+	cmp	x8, 0
+	b.le	5f                              // leave the lethal hit visible
 	LDQ	x8, m_trait
 	cmp	x8, 1                           // venomous: 30% poison for 3 turns
 	b.ne	2f
@@ -1101,7 +1249,11 @@ _foe_turn:
 	STQ	x8, p_poison
 	ADDQ	p_hp, -2
 	LOG	"\004  Venom burns. -2 HP.\001"
-5:	LEAVE
+5:	LDQ	x8, p_hp
+	cmp	x8, 0
+	b.le	6f
+	bl	_prepare_intent
+6:	LEAVE
 
 // combat -> x0: 0 won, 1 fled, 2 dead
 _combat:
@@ -1111,6 +1263,15 @@ _combat:
 	STQ	xzr, log_n
 	STQ	xzr, c_buff
 	STQ	xzr, p_poison
+	STQ	xzr, c_opening
+	mov	x0, 2                           // the King opens with two quick strikes
+	LDQ	x8, boss
+	cbnz	x8, L_first_intent
+	mov	x0, 3
+	bl	_rnd
+L_first_intent:
+	STQ	x0, c_quick_left
+	bl	_prepare_intent
 	LDQ	x2, m_flavor
 	LOG	"\003\023  %s\001"
 1:	LDQ	x8, foe_hp
@@ -1120,7 +1281,7 @@ _combat:
 	cmp	x8, 0
 	b.le	90f
 	bl	_render_combat
-	STR	x0, "  \003[a]ttack  [h]eavy  [b]ean  [p]otion  [r]un >\001 "
+	STR	x0, "  \003[a]ttack  [h]eavy  [g]uard  [b]ean  [p]otion  [r]un >\001 "
 	mov	x1, 1
 	bl	_readline
 	ldrb	w19, [x0]
@@ -1131,6 +1292,8 @@ _combat:
 	b.eq	10f
 	cmp	w19, 'h'
 	b.eq	15f
+	cmp	w19, 'g'
+	b.eq	18f
 	cmp	w19, 'b'
 	b.eq	25f
 	cmp	w19, 'p'
@@ -1152,6 +1315,7 @@ _combat:
 	lsl	x20, x20, 1
 	mov	x21, 1
 12:	mov	x0, x20
+	mov	x1, 0
 	bl	_apply_hit
 	cbz	x0, 11f
 	mov	x3, x0
@@ -1167,11 +1331,14 @@ _combat:
 	bl	_foe_turn
 	b	1b
 
-15:	mov	x0, 2                           // heavy: double damage or a miss
+15:	LDQ	x8, c_opening
+	cbnz	x8, 17f
+	mov	x0, 2                           // heavy: double damage or a miss
 	bl	_rnd
 	cbnz	x0, 16f
 	bl	_roll_dmg
 	lsl	x0, x0, 1
+	mov	x1, 0
 	bl	_apply_hit
 	cbz	x0, 11b
 	mov	x2, x0
@@ -1179,19 +1346,23 @@ _combat:
 	b	11b
 16:	LOG	"\003  You swing wide and miss.\001"
 	b	11b
+17:	bl	_roll_dmg                       // a parry makes the next heavy a sure hit
+	lsl	x0, x0, 1
+	mov	x1, 1
+	bl	_apply_hit
+	mov	x2, x0
+	LOG	"\002\005  Riposte! You strike the opening for %ld.\001"
+	b	11b
+18:	mov	x0, 0
+	bl	_foe_turn
+	b	1b
 
 20:	LDQ	x8, p_pot                       // potion
 	cmp	x8, 0
 	b.gt	21f
 	LOG	"\003  No potions. Pockets full of lint.\001"
 	b	1b
-21:	ADDQ	p_pot, -1
-	mov	x0, 10
-	LDQ	x8, p_class
-	cmp	x8, 1                           // barista brews them stronger
-	b.ne	22f
-	mov	x0, 15
-22:	bl	_heal
+21:	bl	_drink_potion
 	mov	x2, x0
 	LOG	"\005  ✚ You drink. +%ld HP.\001"
 	STR	x0, "\004  ← %s clips you for %ld mid-sip.\001"
@@ -1242,20 +1413,18 @@ _combat:
 90:	STQ	xzr, p_poison
 	LDQ	x8, p_hp
 	cmp	x8, 0
+	b.gt	91f
+	bl	_combat_recap
+	mov	x0, 2
+	LEAVE
+91:
 	mov	x0, 0
-	mov	x1, 2
-	csel	x0, x1, x0, le
 	LEAVE
 
 // ---------- rooms ----------
 
 _merchant:
 	ENTER
-	LDQ	x8, p_x
-	LDQ	x9, p_y
-	mov	x10, 5
-	madd	x19, x9, x10, x8
-	LA	x20, rooms
 	mov	x21, 0                          // a message from the last choice?
 1:	LA	x0, art_merchant
 	LA	x1, lbl_merchant
@@ -1264,7 +1433,7 @@ _merchant:
 	cbz	x21, 2f
 	LA	x1, msgbuf
 	SAY	"%s\n"
-2:	bl	_render_bottom
+2:	bl	_status                         // show purse and gear beside the prices
 	SAY	"\n  \023[1]\001 Potion           \0075g\001\n  \023[2]\001 Sharpen weapon  \00712g\001  (+1 ATK)\n  \023[3]\001 Reinforce armor \00712g\001  (+1 ARM)\n  \023[4]\001 Mystery box     \00710g\001\n  \023[5]\001 Coffee beans     \0078g\001  (x2)\n  \023[6]\001 Leave\n"
 	STR	x0, "  \003>\001 "
 	mov	x1, 0
@@ -1322,7 +1491,13 @@ _merchant:
 	bl	_hurt
 	mov	x2, x0
 	MSG	"\004  It bites. %ld damage.\001"
-	b	1b
+	LDQ	x8, p_hp
+	cmp	x8, 0
+	b.gt	1b
+	LA	x1, msgbuf
+	SAY	"%s\n"
+	mov	x0, 1                           // a lethal bite ends shopping
+	LEAVE
 133:	ADDQ	p_max, 2
 	ADDQ	p_hp, 2
 	MSG	"\005  Max HP +2.\001"
@@ -1339,12 +1514,12 @@ _merchant:
 	b.eq	50f
 40:	MSG	"\003  Not enough gold, or not a real choice.\001"
 	b	1b
-50:	strb	wzr, [x20, x19]
-	LA	x0, art_empty
-	LA	x1, lbl_empty
+50:	LA	x0, art_merchant
+	LA	x1, lbl_merchant
 	bl	_render_top
-	SAY	"\003  The figure refolds the table and is gone.\001\n"
+	SAY	"\003  'Come back on payday.' The merchant pulls up a stool.\001\n"
 	bl	_render_bottom
+	mov	x0, 0
 	LEAVE
 
 // handle_room -> x0: 0 ok, 1 dead, 2 reached the exit
@@ -1378,11 +1553,23 @@ _handle_room:
 	b.eq	90f
 	cmp	w21, 9
 	b.eq	100f
+	cmp	w21, 10
+	b.ne	2f
+	add	x0, x20, x19
+	bl	_crew_room
+	mov	x0, 0
+	LEAVE
 
-	LA	x0, art_empty                   // empty
-	LA	x1, lbl_empty
-	bl	_render_top
-	SAY	"\003  The room is empty. Dust. A faint smell of beans.\001\n"
+2:	bl	_floor_scene                    // a room keeps its detail on return
+	mov	x9, 3
+	udiv	x8, x19, x9
+	msub	x8, x8, x9, x19
+	LDQ	x10, depth
+	sub	x10, x10, 1
+	madd	x8, x10, x9, x8
+	LA	x9, quiet_lines
+	ldr	x1, [x9, x8, lsl 3]
+	SAY	"\003  %s\001\n"
 	bl	_render_bottom
 	mov	x0, 0
 	LEAVE
@@ -1407,7 +1594,8 @@ _handle_room:
 	cbz	x21, 33f
 	SAY	"\003  You catch your breath. The room is quiet now.\001\n"
 	b	34f
-33:	LA	x1, m_name
+33:	bl	_combat_recap
+	LA	x1, m_name
 	SAY	"\005  ✓ %s collapses.\001\n"
 	LDQ	x1, m_gold
 	SAY	"\007  +%ld gold.\001\n"
@@ -1538,12 +1726,12 @@ _handle_room:
 	bl	_render_bottom
 	mov	x0, 0
 	LEAVE
-65:	strb	wzr, [x20, x19]
+65:
+	SAY	"\003  The offering bowl stays out.\001\n"
 	mov	x0, 0
 	LEAVE
 
 70:	bl	_merchant                       // merchant
-	mov	x0, 0
 	LEAVE
 
 80:	mov	x0, 4                           // fountain
@@ -1553,6 +1741,7 @@ _handle_room:
 	mov	x0, 8
 	bl	_heal
 	mov	x22, x0
+	cbz	x22, L_fountain_full
 	strb	wzr, [x20, x19]
 	LA	x0, art_fountain
 	LA	x1, lbl_fountain
@@ -1565,12 +1754,20 @@ _handle_room:
 	mov	x0, 0
 	LEAVE
 
+L_fountain_full:
+	LA	x0, art_fountain
+	LA	x1, lbl_fountain
+	bl	_render_top
+	SAY	"  The dipper hangs on a hook. You're at full health.\n  You can come back for a drink.\n"
+	bl	_render_bottom
+	mov	x0, 0
+	LEAVE
+
 85:	LA	x0, art_campfire                // campfire
 	LA	x1, lbl_campfire
 	bl	_render_top
 	SAY	"\006  Embers glow in a ring of stones. Someone left a kettle.\001\n"
 	bl	_render_bottom
-	strb	wzr, [x20, x19]
 	STR	x0, "\n  \003Rest here? [y/N] >\001 "
 	mov	x1, 1
 	bl	_readline
@@ -1579,6 +1776,7 @@ _handle_room:
 	b.ne	87f
 	ldrb	w8, [x0, 1]
 	cbnz	w8, 87f
+	strb	wzr, [x20, x19]
 	mov	x0, 100
 	bl	_rnd
 	cmp	x0, 25
@@ -1662,14 +1860,15 @@ _handle_room:
 	cbz	x21, 102f
 	LA	x1, msgbuf
 	SAY	"%s\n"
-102:	bl	_render_bottom
-	LDQ	x8, p_gold
+102:	LDQ	x8, p_gold
 	cmp	x8, 5
 	b.ge	103f
 	SAY	"\n\003  You're broke. The goblin loses interest.\001\n"
+	bl	_render_bottom
 	mov	x0, 0
 	LEAVE
-103:	SAY	"\n  \023[1]\001 Bet  \0075g\001\n  \023[2]\001 Bet \00710g\001\n  \023[3]\001 Bet \00720g\001\n  \023[4]\001 Walk away\n"
+103:	LDQ	x1, p_gold
+	SAY	"\007  Your purse: %ld gold.\001\n\n  \023[1]\001 Bet  \0075g\001\n  \023[2]\001 Bet \00710g\001\n  \023[3]\001 Bet \00720g\001\n  \023[4]\001 Walk away\n"
 	STR	x0, "  \003>\001 "
 	mov	x1, 0
 	bl	_readline
@@ -1732,6 +1931,147 @@ _handle_room:
 	SAY	"\003  The goblin tips its visor. 'Come back richer.'\001\n"
 	bl	_render_bottom
 	mov	x0, 0
+	LEAVE
+
+// Night shift: each floor has one crew member. Leaving keeps the room active.
+// crew_choice -> 1 or 2, or 0 to come back later.
+_crew_choice:
+	ENTER
+1:	STR	x0, "  \003[1/2/l] >\001 "
+	mov	x1, 1
+	bl	_readline
+	ldrb	w8, [x0]
+	cbz	w8, 2f
+	ldrb	w9, [x0, 1]
+	cbnz	w9, 3f
+	cmp	w8, 'l'
+	b.eq	2f
+	sub	w8, w8, '1'
+	cmp	w8, 1
+	b.hi	3f
+	add	w0, w8, 1
+	LEAVE
+2:	mov	x0, 0
+	LEAVE
+3:	SAY	"\003  Choose 1, 2, or l to come back later.\001\n"
+	b	1b
+
+// crew_room(x0 address of room byte). Clear the landmark only on rescue.
+_crew_room:
+	ENTER
+	mov	x19, x0
+	LDQ	x20, depth
+	cmp	x20, 2
+	b.eq	Lcrew_fitter
+	b.hi	Lcrew_taster
+	LA	x0, art_lift
+	STR	x1, "\002\006  THE SACK LIFT\001\n"
+	bl	_render_top
+	SAY	"  A split axle pins Nell's boot under her delivery cart.\n  'Cut the sacks if you have to. Just mind the toes.'\n\n"
+	bl	_status
+	SAY	"\n  [1] Slit the sacks. Catch two beans before they spill.\n  [2] Lift the loaded cart. 4 HP for Nell's leather harness (+1 ARM).\n  [l] Come back later.\n"
+1:	bl	_crew_choice
+	cbz	x0, Lcrew_later
+	cmp	x0, 2
+	b.ne	2f
+	LDQ	x8, p_hp
+	cmp	x8, 4
+	b.gt	3f
+	SAY	"\003  Your knees give. You need at least 5 HP to lift it.\001\n"
+	b	1b
+3:	ADDQ	p_hp, -4
+	ADDQ	p_arm, 1
+	SAY	"\n  You heave. Nell rolls clear and buckles her harness over your coat.\n\005  Nell is free. -4 HP, +1 ARM.\001\n"
+	b	Lcrew_rescued
+2:	ADDQ	p_beans, 2
+	SAY	"\n  Beans pour down the chute. Nell slips out and palms you two.\n\005  Nell is free. +2 beans.\001\n"
+	b	Lcrew_rescued
+
+Lcrew_fitter:
+	LA	x0, art_manifold
+	STR	x1, "\002\020  THE BLEED VALVES\001\n"
+	bl	_render_top
+	SAY	"  Ivo is wedged behind a buckled boiler door. He taps on the brass.\n  'Bleed the one with more pressure. Both wheels open the door,\n  but guess wrong and you'll take a faceful of steam.'\n\n"
+	mov	x0, 2
+	bl	_rnd
+	add	x21, x0, 1                      // which valve is under full pressure?
+	mov	x1, 90
+	mov	x2, 20
+	cmp	x21, 1
+	b.eq	4f
+	mov	x1, 20
+	mov	x2, 90
+4:	SAY	"  \006BRASS  %ld psi       IRON  %ld psi\001\n\n"
+	SAY	"  [1] Vent brass.    [2] Vent iron.    [l] Come back later.\n"
+	bl	_crew_choice
+	cbz	x0, Lcrew_later
+	cmp	x0, x21
+	b.eq	5f
+	LDQ	x8, p_hp                        // the steam scalds, but never kills
+	sub	x8, x8, 1
+	mov	x9, 3
+	cmp	x8, x9
+	csel	x9, x8, x9, lt
+	mov	x1, x9
+	LDQ	x8, p_hp
+	sub	x8, x8, x9
+	STQ	x8, p_hp
+	SAY	"\n  The door flies open. Ivo pulls you out of the steam.\n\004  Ivo is free. The backwash costs you %ld HP.\001\n"
+	b	Lcrew_rescued
+5:	ADDQ	p_atk, 1
+	SAY	"\n  The needle drops. Ivo steps out and hands you his long brass wrench.\n\005  Ivo is free. +1 ATK.\001\n"
+	b	Lcrew_rescued
+
+Lcrew_taster:
+	LA	x0, art_hatch
+	STR	x1, "\002\017  THE TASTING HATCH\001\n"
+	bl	_render_top
+	SAY	"  The King locked Dot in the dumbwaiter between courses. You prise\n  the hatch up a crack. 'Hands full,' she whispers. 'Pick one tray\n  and I'll drop the other.'\n\n"
+	bl	_status
+	SAY	"\n  [1] Save two stoppered potions for later.\n  [2] Drink the cordial now (+3 max HP, heal up to 8 HP).\n  [l] Come back with both hands free.\n"
+	bl	_crew_choice
+	cbz	x0, Lcrew_later
+	cmp	x0, 2
+	b.eq	6f
+	ADDQ	p_pot, 2
+	SAY	"\n  Glass breaks down the shaft. Dot ducks under your arm with both bottles.\n\005  Dot is free. +2 potions.\001\n"
+	b	Lcrew_rescued
+6:	ADDQ	p_max, 3
+	mov	x0, 8
+	bl	_heal
+	mov	x1, x0
+	SAY	"\n  Dot lifts the cordial to your lips, then climbs over you to freedom.\n  'He thought that one was poison. Funny man.'\n\005  Dot is free. +3 max HP, +%ld HP.\001\n"
+Lcrew_rescued:
+	sub	x8, x20, 1
+	mov	x9, 1
+	lsl	x9, x9, x8
+	LDQ	x8, crew_mask
+	orr	x8, x8, x9
+	STQ	x8, crew_mask
+	strb	wzr, [x19]
+	bl	_render_bottom
+	LEAVE
+Lcrew_later:
+	SAY	"\003  You leave the way clear. You can return on this floor.\001\n"
+	bl	_render_bottom
+	LEAVE
+
+_crew_ending:
+	ENTER
+	LDQ	x19, crew_mask
+	cbz	x19, 4f
+	cmp	x19, 7
+	b.eq	5f
+	tbz	x19, 0, 1f
+	SAY	"  Nell rolls the royal sacks up to the dock. 'No delivery charge.'\n"
+1:	tbz	x19, 1, 2f
+	SAY	"  Ivo takes the whistle off the King's kettle. He's had enough of that noise.\n"
+2:	tbz	x19, 2, 3f
+	SAY	"  Dot throws the tasting spoon down the well. She'll drink when she's thirsty.\n"
+3:	LEAVE
+4:	SAY	"\003  On your way out, three timecards still hang on the IN side.\001\n"
+	LEAVE
+5:	SAY	"\007  Nell props the loading hatch open. Ivo lights the stove.\n  Dot sets out four cups and grinds the bean. The first pot is weak.\n  Everyone stays for a second cup.\001\n"
 	LEAVE
 
 // ---------- main loop ----------
@@ -1813,35 +2153,49 @@ _finish:
 	bl	_fputs
 	mov	x0, x21
 	bl	_fclose
-2:	SAY	"\n\n"
+2:	LDQ	x1, run_seed
+	SAY	"\n\003  Replay this run: ./crypt --seed %lu\001\n\n"
 	LEAVE
 
-// gen_dungeon: a fresh 5x5 floor, index = y*5 + x
+// The floor's 22 ordinary rooms form a shuffled deck. The last slot is
+// reserved so a crew room can swap into a side aisle without erasing loot.
 _gen_dungeon:
 	ENTER
 	LA	x19, rooms
 	LA	x20, visited
-	mov	x21, 0
-2:	mov	x8, 0
-	cbz	x21, 3f                         // entrance and exit are empty
-	cmp	x21, 24
-	b.eq	3f
-	mov	x0, 100
-	bl	_rnd
-	LA	x9, room_cum
-	mov	x8, 0
-4:	ldrb	w10, [x9, x8]
-	cmp	x0, x10
-	b.lo	3f
-	add	x8, x8, 1
-	b	4b
-3:	strb	w8, [x19, x21]
-	strb	wzr, [x20, x21]
-	add	x21, x21, 1
-	cmp	x21, 25
-	b.lo	2b
+	stp	xzr, xzr, [x20]
+	stp	xzr, xzr, [x20, 16]             // visited has 32 bytes
 	mov	w8, 1
 	strb	w8, [x20]
+	strb	wzr, [x19]                      // entrance
+	strb	wzr, [x19, 24]                  // stairs / throne
+	LDQ	x8, depth
+	sub	x8, x8, 1
+	mov	x9, 22
+	LA	x10, floor_decks
+	madd	x1, x8, x9, x10
+	add	x0, x19, 1
+	mov	x2, 22
+	bl	_memcpy
+	mov	x21, 22
+1:	mov	x0, x21                         // shuffle slots 1 through 22
+	bl	_rnd
+	add	x0, x0, 1
+	ldrb	w8, [x19, x0]
+	ldrb	w9, [x19, x21]
+	strb	w8, [x19, x21]
+	strb	w9, [x19, x0]
+	sub	x21, x21, 1
+	cmp	x21, 1
+	b.hi	1b
+	mov	x0, 8
+	bl	_rnd
+	LA	x8, crew_aisles
+	ldrb	w9, [x8, x0]
+	ldrb	w10, [x19, x9]
+	strb	w10, [x19, 23]
+	mov	w10, 10
+	strb	w10, [x19, x9]
 	LEAVE
 
 _play:
@@ -1849,7 +2203,8 @@ _play:
 	bl	_clear
 	LA	x0, art_banner
 	bl	_show_art
-	SAY	"\n"
+	LDQ	x1, run_seed
+	SAY	"\n\003  Run seed: %lu\001\n"
 	bl	_best_load
 	LDQ	x1, best
 	cbz	x1, 49f
@@ -1892,6 +2247,7 @@ _play:
 	STQ	xzr, p_x
 	STQ	xzr, p_y
 	STQ	xzr, p_turns
+	STQ	xzr, crew_mask
 
 	mov	x8, 1
 	STQ	x8, p_lvl
@@ -1912,22 +2268,20 @@ _play:
 	ADDQ	p_pot, 2                        // barista
 	b	54f
 53:	ADDQ	p_atk, 1                        // rogue
-54:	bl	_gen_dungeon
+54:	bl	_deal_floor
 
-	LA	x0, art_start
-	LA	x1, lbl_start
-	bl	_render_top
+	bl	_floor_scene
 	LA	x1, p_name
 	LDQ	x8, p_class
 	LA	x9, class_names
 	ldr	x2, [x9, x8, lsl 3]
-	SAY	"\023  Welcome, %s the %s.\001\n\003  The King hoards every bean north of the river.\001\n\003  Three floors down, he waits. Find the > on each floor.\001\n"
+	SAY	"\023  %s the %s ducks under the dock chain.\001\n  The King's taken every bean north of the river.\n  His last one's three floors down. Take it back.\n\020  Hear that knock? Follow ! to find the night shift.\001\n"
 	bl	_render_bottom
 
 10:	LDQ	x8, p_hp
 	cmp	x8, 0
 	b.le	20f
-	STR	x0, "\n  \003[w/a/s/d] move  [i] info  [q] quit >\001 "
+	STR	x0, "\n  \003[w/a/s/d] move  [p]otion  [i] info  [q] quit >\001 "
 	mov	x1, 1
 	bl	_readline
 	ldrb	w8, [x0]
@@ -1938,6 +2292,8 @@ _play:
 	b.eq	18f
 	cmp	w8, 'i'
 	b.eq	17f
+	cmp	w8, 'p'
+	b.eq	L_field_potion
 	mov	x0, 0
 	mov	x1, 0
 	cmp	w8, 'w'
@@ -1977,11 +2333,34 @@ _play:
 	cmp	x0, 2
 	b.eq	30f
 	b	10b
-15:	SAY	"\003  Try w/a/s/d.\001\n"
+15:	SAY	"\003  Move with w/a/s/d. Press i for the shift notes.\001\n"
 	b	10b
 16:	SAY	"\003  A wall. Rude.\001\n"
 	b	10b
-17:	SAY	"\003  Find > in the far corner of each floor. @ is you. · visited. ? unknown.\001\n"
+17:	bl	_clear
+	LDQ	x1, run_seed
+	SAY	"\002  Shift notes\001   \003Seed %lu\001\n  The far stair (>) leads down. Your map remembers nearby doors.\n  Follow ! to a missing worker before you leave their floor.\n  Shops stay open. A quiet doorway can still hide a trap.\n  In a fight, [g]uard a wind-up, then [h]eavy to riposte.\n"
+	bl	_render_bottom
+	b	10b
+L_field_potion:
+	LDQ	x8, p_hp
+	LDQ	x9, p_max
+	cmp	x8, x9
+	b.lt	L_field_stock
+	SAY	"\003  You're at full health. The cork stays in.\001\n"
+	b	10b
+L_field_stock:
+	LDQ	x8, p_pot
+	cbnz	x8, L_field_drink
+	SAY	"\003  You're out of potions.\001\n"
+	b	10b
+L_field_drink:
+	bl	_drink_potion
+	mov	x1, x0
+	LDQ	x2, p_hp
+	LDQ	x3, p_max
+	LDQ	x4, p_pot
+	SAY	"\005  +%ld HP.\001  Health %ld/%ld, potions left %ld.\n"
 	b	10b
 18:	SAY	"\003\n  You walk back into the daylight. Story untold.\001\n"
 	LEAVE
@@ -2009,24 +2388,25 @@ _play:
 	bl	_show_art
 	SAY	"\n"
 	bl	_divider
-	STR	x0, "\007  A spiral stair winds down into the dark.\001\n"
-	bl	_slow
-	ADDQ	depth, 1
-	LDQ	x1, depth
-	STR	x0, "\003  Floor %ld. The air smells of burnt sugar.\001\n"
+	STR	x0, "\007  The brass handrail is warm. Warmer still a few steps down.\001\n"
 	bl	_slow
 	bl	_divider
-	STR	x0, "\n  \003[enter] descend >\001 "
-	mov	x1, 0
-	bl	_readline
-	bl	_gen_dungeon
+	STR	x0, "\n  \003[enter] descend  [b]ack >\001 "
+	bl	_confirm_exit
+	cbz	x0, L_turn_back
+	ADDQ	depth, 1
+	bl	_deal_floor
 	STQ	xzr, p_x
 	STQ	xzr, p_y
-	LA	x0, art_start
-	LA	x1, lbl_start
-	bl	_render_top
-	LDQ	x1, depth
-	SAY	"\023  Floor %ld of 3.\001\n\003  The monsters down here have had more coffee.\001\n"
+	bl	_floor_scene
+	LDQ	x8, depth
+	cmp	x8, 2
+	b.ne	L_pantry_arrival
+	SAY	"  Someone wedged a teaspoon in the safety valve.\n  The brass floor plates rattle under your boots.\n"
+	b	L_floor_arrival_map
+L_pantry_arrival:
+	SAY	"  Every jar bears the same seal: FOR HIS MAJESTY.\n  Behind the throne door (>) a spoon taps china.\n"
+L_floor_arrival_map:
 	bl	_render_bottom
 	b	10b
 
@@ -2040,9 +2420,9 @@ _play:
 	STR	x0, "\004  'You came for my last bean? Come and take it.'\001\n"
 	bl	_slow
 	bl	_divider
-	STR	x0, "\n  \003[enter] fight >\001 "
-	mov	x1, 0
-	bl	_readline
+	STR	x0, "\n  \003[enter] fight  [b]ack >\001 "
+	bl	_confirm_exit
+	cbz	x0, L_turn_back
 	bl	_setup_boss
 	bl	_combat
 	cmp	x0, 2
@@ -2053,12 +2433,14 @@ _play:
 	bl	_show_art
 	SAY	"\n"
 	bl	_divider
+	bl	_combat_recap
 	STR	x0, "\007  The King slumps into his sacks. Behind the throne: a kitchen.\001\n"
 	bl	_slow
 	STR	x0, "\007  On the counter: the King's last bean.\001\n"
 	bl	_slow
 	STR	x0, "\002\007  You take it.\001\n"
 	bl	_slow
+	bl	_crew_ending
 	bl	_divider
 	SAY	"\n"
 	LDQ	x1, p_turns
@@ -2070,9 +2452,84 @@ _play:
 	bl	_finish
 99:	LEAVE
 
+L_turn_back:
+	SAY	"\003  You step back onto the landing.\001\n"
+	bl	_render_bottom
+	b	10b
+
+// Empty input crosses the threshold. Only explicit 'b' backs away.
+_confirm_exit:
+	ENTER
+	mov	x19, x0
+	LDQ	x8, depth
+	sub	x8, x8, 1
+	LDQ	x9, crew_mask
+	lsr	x9, x9, x8
+	tbnz	x9, 0, 1f
+	SAY	"\020  You can still hear someone working on this floor.\001\n"
+1:	mov	x0, x19
+	mov	x1, 1
+	bl	_readline
+	ldrb	w8, [x0]
+	cbz	w8, 2f
+	cmp	w8, 'b'
+	b.ne	1b
+	ldrb	w8, [x0, 1]
+	cbnz	w8, 1b
+	mov	x0, 0
+	LEAVE
+2:	mov	x0, 1
+	LEAVE
+
 	.globl _main
 _main:
 	ENTER
+	mov	x19, x0                          // argc, argv
+	mov	x20, x1
+	cmp	w19, 1
+	b.eq	L_random_seed
+	ldr	x0, [x20, 8]
+	STR	x1, "--help"
+	bl	_strcmp
+	cbnz	w0, L_seed_arg
+	cmp	w19, 2
+	b.ne	L_bad_seed
+	mov	x21, 0
+	b	L_usage
+L_seed_arg:
+	cmp	w19, 3
+	b.ne	L_bad_seed
+	ldr	x0, [x20, 8]
+	STR	x1, "--seed"
+	bl	_strcmp
+	cbnz	w0, L_bad_seed
+	ldr	x9, [x20, 16]
+	ldrb	w10, [x9]
+	cbz	w10, L_bad_seed
+	mov	x8, 0
+	mov	x11, 10
+L_seed_digit:
+	ldrb	w10, [x9], 1
+	cbz	w10, L_seed_ready
+	sub	w10, w10, '0'
+	cmp	w10, 9
+	b.hi	L_bad_seed
+	madd	x8, x8, x11, x10
+	lsr	x12, x8, 32
+	cbnz	x12, L_bad_seed
+	b	L_seed_digit
+L_bad_seed:
+	mov	x21, 2
+L_usage:
+	SAY	"Usage: ./crypt [--seed N]\nN is a decimal number from 0 to 4294967295.\n"
+	mov	x0, x21
+	LEAVE
+L_random_seed:
+	bl	_arc4random
+	mov	w8, w0
+L_seed_ready:
+	STQ	x8, run_seed
+	STQ	x8, rng_state
 	mov	w0, 1
 	bl	_isatty
 	cbz	w0, 1f
@@ -2100,6 +2557,11 @@ L_an:	.asciz "an"
 	.data
 	.p2align 3
 use_color:	.quad 0
+run_seed:	.quad 0
+rng_state:	.quad 0
+rng_step:	.quad 0x9e3779b97f4a7c15
+rng_mix1:	.quad 0xbf58476d1ce4e5b9
+rng_mix2:	.quad 0x94d049bb133111eb
 p_hp:		.quad 0
 p_max:		.quad 0
 p_atk:		.quad 0
@@ -2123,11 +2585,15 @@ p_lvl:		.quad 0
 p_xp:		.quad 0
 depth:		.quad 0
 boss:		.quad 0
-boss_turns:	.quad 0
+c_quick_left:	.quad 0
+c_windup:	.quad 0
+c_incoming:	.quad 0
+c_opening:	.quad 0
 boss_healed:	.quad 0
 m_trait:	.quad 0
 p_class:	.quad 0
 p_beans:	.quad 0
+crew_mask:	.quad 0                         // bit depth-1 is set on rescue
 p_poison:	.quad 0
 c_buff:		.quad 0
 best:		.quad 0
@@ -2153,6 +2619,18 @@ best:		.quad 0
 
 	.section __TEXT,__cstring,cstring_literals
 	.include "art.s"
+lbl_dock:	.asciz "\002\024  I   LOADING DOCK\001\n"
+lbl_boiler:	.asciz "\002\004  II  BOILERWORKS\001\n"
+lbl_pantry:	.asciz "\002\007  III KING'S PANTRY\001\n"
+L_dock_scale:	.asciz "The cargo scales swing. Both pans are empty."
+L_dock_book:	.asciz "A rat signed for the last load. Neat handwriting."
+L_dock_cart:	.asciz "Cart tracks lead in. Bare footprints lead out."
+L_boiler_steam:	.asciz "A pinhole in a pipe whistles through its teeth."
+L_boiler_mug:	.asciz "Someone's keeping a mug warm on the steam return."
+L_boiler_bell:	.asciz "The gauge has two marks: HOT and YOUR PROBLEM."
+L_pantry_jar:	.asciz "One biscuit sits on a velvet cushion behind glass."
+L_pantry_spoon:	.asciz "Each silver spoon is chained to its own hook."
+L_pantry_tin:	.asciz "A tin marked DECAF is full of nails."
 lbl_empty:	.asciz "\002\021  ·  EMPTY ROOM\001\n"
 lbl_monster:	.asciz "\002\004  ⚔  ENCOUNTER\001\n"
 lbl_treasure:	.asciz "\002\007  ◆  TREASURE\001\n"
@@ -2161,7 +2639,6 @@ lbl_shrine:	.asciz "\002\020  ✦  SHRINE\001\n"
 lbl_fountain:	.asciz "\002\016  ≈  FOUNTAIN\001\n"
 lbl_merchant:	.asciz "\002\006  $  MERCHANT\001\n"
 lbl_exit:	.asciz "\002\007  >  EXIT\001\n"
-lbl_start:	.asciz "\002\023  @  CRYPT ENTRANCE\001\n"
 lbl_campfire:	.asciz "\002\006  ♨  CAMPFIRE\001\n"
 lbl_riddle:	.asciz "\002\020  ?  RIDDLE\001\n"
 lbl_dice:	.asciz "\002\006  ⚅  DICE GOBLIN\001\n"
@@ -2182,6 +2659,12 @@ esc_BRN:	.asciz "\033[38;5;180m"
 
 	.section __DATA,__const
 	.p2align 3
+floor_scenes:
+	.quad art_dock, lbl_dock, art_boiler, lbl_boiler, art_pantry, lbl_pantry
+quiet_lines:
+	.quad L_dock_scale, L_dock_book, L_dock_cart
+	.quad L_boiler_steam, L_boiler_mug, L_boiler_bell
+	.quad L_pantry_jar, L_pantry_spoon, L_pantry_tin
 colortab:		// control byte -> ANSI sequence (0 = not a colour token)
 	.quad 0
 	.quad esc_R
@@ -2327,14 +2810,38 @@ riddles:		// question, answer, alternative answer
 	.quad Lr9, Lr9a, Lr9a
 trait_names:		// indexed by monster trait
 	.quad 0, Lt1, Lt2, Lt3, Lt4, Lt5, Lt6
+windup_tells:		// same trait order
+	.quad tell_plain, tell_venom, tell_evasive, tell_armored
+	.quad tell_thief, tell_regen, tell_manager
 writeups:		// the manager's write-up lines
 	.quad Lw0, Lw1, Lw2, Lw3
 class_names:
 	.quad Lc0, Lc1, Lc2
-room_cum:		// cumulative weights: empty monster treasure trap shrine merchant fountain campfire riddle dice
-	.byte 7, 37, 52, 62, 69, 76, 86, 91, 96, 100
+room_glyphs:
+	.quad glyph_quiet, glyph_foe, glyph_cache, glyph_quiet, glyph_shrine
+	.quad glyph_shop, glyph_rest, glyph_rest, glyph_oddity, glyph_oddity
+map_key:                                // drawn alongside the map, north at the top
+	.quad key_bottom, key_goods, key_risk, key_fog, key_top
+floor_decks:                            // room IDs in _handle_room order
+	.byte 0, 1,1,1,1, 2,2,2,2,2, 3,3, 4, 5,5, 6,6,6, 7,7, 8, 9    // Loading Dock
+	.byte 0, 1,1,1,1,1, 2,2,2, 3,3,3,3, 4,4, 5, 6,6, 7,7, 8, 9   // Boilerworks
+	.byte 0, 1,1,1,1,1,1,1, 2,2,2, 3,3, 4,4,4, 5, 6, 7,7, 8, 9   // King's Pantry
+crew_aisles:
+	.byte 3, 4, 8, 9, 15, 16, 20, 21
 
 	.section __TEXT,__cstring,cstring_literals
+glyph_quiet:	.asciz "\003:\001"
+glyph_foe:	.asciz "\004x\001"
+glyph_cache:	.asciz "\007=\001"
+glyph_shrine:	.asciz "\017^\001"
+glyph_shop:	.asciz "\007$\001"
+glyph_rest:	.asciz "\005+\001"
+glyph_oddity:	.asciz "\020*\001"
+key_top:	.asciz "\002\005@\001 you       \002\020!\001 crew      \007>\001 exit"
+key_fog:	.asciz "\022?\001 unknown   \021·\001 cleared"
+key_risk:	.asciz "\003:\001 quiet     \004x\001 foe"
+key_goods:	.asciz "\007$\001 shop      \007=\001 cache"
+key_bottom:	.asciz "\017^\001 shrine    \020*\001 oddity    \005+\001 rest"
 Lr0:	.asciz "The more you take, the more you leave behind. What are they?"
 Lr0a:	.asciz "footstep"
 Lr0b:	.asciz "step"
@@ -2359,12 +2866,19 @@ Lr8:	.asciz "The more of me there is, the less you see. What am I?"
 Lr8a:	.asciz "dark"
 Lr9:	.asciz "What has hands but cannot clap?"
 Lr9a:	.asciz "clock"
-Lt1:	.asciz "venomous"
-Lt2:	.asciz "evasive"
-Lt3:	.asciz "armored"
-Lt4:	.asciz "light-fingered"
-Lt5:	.asciz "regenerating"
-Lt6:	.asciz "managerial"
+Lt1:	.asciz "Venomous · a bite can poison you for 2 HP per turn."
+Lt2:	.asciz "Evasive · dodges one hit in four. A riposte always lands."
+Lt3:	.asciz "Armored · absorbs 2 damage per hit, down to a minimum of 1."
+Lt4:	.asciz "Light-fingered · steals gold on contact. Win to get it back."
+Lt5:	.asciz "Regenerating · heals up to 2 HP before each swing."
+Lt6:	.asciz "Managerial · blocks the exit. Each write-up costs 1 ATK this fight."
+tell_plain:	.asciz "It rocks back on its heels."
+tell_venom:	.asciz "A bead of venom falls to the tiles."
+tell_evasive:	.asciz "For half a breath, it holds perfectly still."
+tell_armored:	.asciz "Something heavy scrapes across the tile."
+tell_thief:	.asciz "One hand points behind you. Watch the other."
+tell_regen:	.asciz "It draws itself up to twice its height."
+tell_manager:	.asciz "The manager uncaps a red pen."
 Lm6:	.asciz "regional manager"
 Lm7:	.asciz "'Got a minute? Per my last email...'"
 Lw0:	.asciz "'Per my last email.'"

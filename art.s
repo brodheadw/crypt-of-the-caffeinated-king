@@ -1,21 +1,53 @@
 // ASCII art. Each piece starts with a colour token and ends with \001 (reset).
 
-art_banner:	.ascii "\007"
-	.ascii "   ____                  _      ___   __    _   _            _\n"
-	.ascii "  / ___|_ __ _   _ _ __ | |_   / _ \\ / _|  | |_| |__   ___  | | _____ _ __\n"
-	.ascii " | |   | '__| | | | '_ \\| __| | | | | |_   | __| '_ \\ / _ \\ | |/ / _ \\ '__|\n"
-	.ascii " | |___| |  | |_| | |_) | |_  | |_| |  _|  | |_| | | |  __/ |   <  __/ |\n"
-	.ascii "  \\____|_|   \\__, | .__/ \\__|  \\___/|_|     \\__|_| |_|\\___|_|_|\\_\\___|_|\n"
-	.ascii "             |___/|_|\n"
-	.ascii "              C a f f e i n a t e d   K i n g\n"
+art_banner:
+	.ascii "\021        (   )\n"
+	.ascii "         ) (\n"
+	.ascii "\007     \\_/\\_/\\_/──╮    \023CRYPT OF THE\n"
+	.ascii "\007      │     │  ╭╯    \002CAFFEINATED KING\001\n"
+	.ascii "\007      ╰─────╯──╯\n"
+	.asciz "\021     ━━━━━━━━━━━\001\n"
+
+art_dock:
+	.ascii "\024       ┌──────────────┐\n"
+	.ascii "       │         ╲    ║\n"
+	.ascii "       J    ╔═╦═╗ ╲   ║\n"
+	.ascii "        ╔═╦═╬═╬═╣     ║\n"
+	.asciz "     ═══╩═╩═╩═╩═╩═════╩═\016≈≈≈\001\n"
+
+art_boiler:
+	.ascii "\021       ╔══╤══╗      \023) )\n"
+	.ascii "\021       ║  ┴  ║   ╭───────╮\n"
+	.ascii "     ══╣     ╚═══╡   \007◴\021   ╞══\n"
+	.ascii "       ║         ╰─┬───┬─╯\n"
+	.asciz "\004                   ^^^^^\001\n"
+
+art_pantry:
+	.ascii "\024     ╔═══════════════════╗\n"
+	.ascii "     ║  ┌─┐   ┌─┐   ┌─┐  ║\n"
+	.ascii "     ║  │\007◆\024│   │\007◆\024│   │\007◆\024│  ║\n"
+	.ascii "     ╠══╧═╧═══╧═╧═══╧═╧══╣\n"
+	.asciz "     ║   [--]     [--]   ║\001\n"
+
+art_lift:	.ascii "\006"
+	.ascii "           |                  |\n"
+	.ascii "           |   (_)  (_)  (_)  |     No. 4 freight lift\n"
+	.ascii "           |  [============]  |\n"
+	.ascii "           |___O_________//___|\n"
 	.asciz "\001"
 
-art_start:	.ascii "\023"
-	.ascii "            _____\n"
-	.ascii "           /     \\\n"
-	.ascii "          |  . .  |     a stone arch yawns ahead.\n"
-	.ascii "           \\_____/      mountain air at your back.\n"
-	.ascii "            |   |       the dark hums.\n"
+art_manifold:	.ascii "\020"
+	.ascii "             .---.     .---.\n"
+	.ascii "            ( PSI )   ( PSI )\n"
+	.ascii "          ===='|=========|'====\n"
+	.ascii "              (X)       (X)\n"
+	.asciz "\001"
+
+art_hatch:	.ascii "\017"
+	.ascii "             +-----------+\n"
+	.ascii "             |=== SERVE =|\n"
+	.ascii "             |    o o    |\n"
+	.ascii "             +--(m)-(m)--+\n"
 	.asciz "\001"
 
 art_empty:	.ascii "\022"
