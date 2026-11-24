@@ -1,6 +1,6 @@
 # Crypt of the Caffeinated King
 
-A tiny terminal dungeon crawler, written entirely in AArch64 assembly for macOS on Apple Silicon. One file, no dependencies beyond the system C library.
+A tiny terminal dungeon crawler, written entirely in AArch64 assembly for macOS on Apple Silicon. No dependencies beyond the system C library.
 
 ```
 clang -o crypt crypt.s
@@ -17,7 +17,7 @@ You descend three randomly generated 5×5 floors, each with its stairs in the fa
   potions) or Rogue (+1 ATK, crits, better at running away)
 - ANSI-colored terminal UI with rounded box borders
 - HP bars that shift green → yellow → red
-- ASCII art for every room type and every monster
+- ASCII art for every room type and every monster, kept in `art.s`
 - Each move clears the screen — each room is its own scene
 - Three floors; monsters and traps hit harder the deeper you go
 - A boss fight: the King throws scalding espresso every third turn, heals
